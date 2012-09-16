@@ -36,5 +36,26 @@
    }}}
 =Run= 
   {{{
-  tools/run.sh -help 
+  tools/run.sh -help
+
+Usage: $0  prog[.c|.bc]  Pass [options] 
+
+Pass is the pass that we want to run: 
+  -wrapped-range-analysis        fixed-width wrapped interval analysis
+  -range-analysis                fixed-width classical interval analysis
+    options:
+      -widening n                n is the widening threshold (0: no widening)
+      -narrowing n               n is the number of narrowing iterations (0: no narrowing)
+      -enable-optimizations      enable LLVM optimizations
+      -inline n                  inline function calls whenever possible if the size of 
+                                 the function is less than n. (0: no inlining). 
+                                 A reasonable threshold n is, e.g., 255.
+      -instcombine               remove redundant instructions.
+                                 It can improve precision by removing problematic casting 
+                                 instructions among many other things.
+                                 
+  general options:
+    -help                          print this message
+    -stats                         print stats
+    -time            
   }}}
