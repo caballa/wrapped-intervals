@@ -38,7 +38,7 @@
   {{{
   tools/run.sh -help
 
-Usage: $0  prog[.c|.bc]  Pass [options] 
+Usage: tools/run.sh  prog[.c|.bc]  Pass [options] 
 
 Pass is the pass that we want to run: 
   -wrapped-range-analysis        fixed-width wrapped interval analysis
@@ -55,7 +55,7 @@ Pass is the pass that we want to run:
                                  instructions among many other things.
                                  
   general options:
-    -help                          print this message
-    -stats                         print stats
-    -time            
+    -help                          print this message.
+    -stats                         print stats.
+    -time                          print times of each pass. 
   }}}
