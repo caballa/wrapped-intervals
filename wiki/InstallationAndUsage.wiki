@@ -27,7 +27,7 @@
    This builds both LLVM and Clang for debug mode.
    }}}
 
-=Download and Compile Wrapped Interval Analysis=
+=Checkout and Installation of Wrapped Interval Analysis=
    {{{
    svn checkout http://wrapped-intervals.googlecode.com/svn/trunk/ wrapped-intervals
    cd wrapped-intervals
