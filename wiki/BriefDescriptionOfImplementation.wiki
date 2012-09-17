@@ -1,12 +1,16 @@
 =Brief Description of the Implementation=
 
-We provide two LLVM passes: -range-analysis and -wrapped-range-analysis. The former corresponds to the classical fixed-width interval analysis and the latter to our wrapped interval analysis.
+We provide two LLVM passes: -range-analysis and -wrapped-range-analysis. The former corresponds to the classical fixed-width interval analysis and the latter to our wrapped interval analysis. 
 
-The implementation contains the following classes:
+The implementation contains the main following classes:
 
-- FixpointSSI
-- AbstractValue
-- BaseRange
-- Range
-- WrappedRange
-
+* FixpointSSI. This class implements an *intraprocedural* generic forward    
+  abstract interpreter. Generic in the sense that it calls only methods   
+  from the class virtual AbstractValue. To plug  a new abstract domain  
+  should not be too hard. It should suffice to implement the methods from 
+  AbstractValue. 
+ 
+* AbstractValue
+* BaseRange
+* Range
+* WrappedRange
