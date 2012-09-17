@@ -33,6 +33,7 @@
    cd wrapped-intervals
   ./configure --with-llvmsrc=LLVM_SRC
   ./make
+   cd docs && make
    }}}
 =Run= 
   {{{
