@@ -4,13 +4,47 @@ We provide two LLVM passes: -range-analysis and -wrapped-range-analysis. The for
 
 The implementation contains the main following classes:
 
-* FixpointSSI. This class implements an *intraprocedural* generic forward    
-  abstract interpreter. Generic in the sense that it calls only methods   
-  from the class virtual AbstractValue. To plug  a new abstract domain  
-  should not be too hard. It should suffice to implement the methods from 
-  AbstractValue. 
+  * FixpointSSI. This class implements an *intraprocedural* generic 
+forward abstract interpreter. Generic in the sense that it calls only methods from the virtual class AbstractValue. To _plug in_ a new abstract domain should not be too hard. It should suffice to implement the methods from AbstractValue class. 
+
+A bit surprising is that the fixpoint uses SSI (Static Single Information) form.
+
+SSI form is an extension of SSA form that ensures that a
+variable can be used only once through any path in the CFG. To do
+that, SSI adds "sigma nodes" in addition to phi nodes. E.g., given
+the following code:
+{{{ 
+if (x>=5)
+   y = x;
+else
+   z = x;
+endif
+}}}
+
+Its SSI version is:
+{{{
+if (x>=5)
+   x.1 = sigma(x, if coming from then branch)
+else
+   x.2 = sigma(x, if coming from else branch)
+endif
+x.3 = phi(x.1,x.2) 
+}}} 
+
+Note that SSI form redefines x in the then branch to x.1 and x.2
+in the else. Since x.1 and x.2 are in SSA form then, it is
+straightforward for the analysis to refine x.1 to [5,+oo] and x.2
+to [-oo,4], respectively.
+
+SSI is often used for backward analyses but rarely for forward
+analyses. The reason is that strictly speaking we do not need SSI
+form for forward analyses. Instead, we can associate each basic
+block with its own map from variables to abstract values. Then,
+whenever a branch condition is executed its successor can refine
+the abstract values in its own copy and then propagate
+changes to the other affected maps held by other basic blocks. 
  
-* AbstractValue
-* BaseRange
-* Range
-* WrappedRange
+  * AbstractValue
+  * BaseRange
+  * Range
+  * WrappedRange
