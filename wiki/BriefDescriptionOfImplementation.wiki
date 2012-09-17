@@ -4,10 +4,8 @@ We provide two LLVM passes: -range-analysis and -wrapped-range-analysis. The for
 
 The implementation contains the main following classes:
 
-  * FixpointSSI. This class implements an *intraprocedural* generic 
-forward abstract interpreter. Generic in the sense that it calls only methods from the virtual class AbstractValue. To _plug in_ a new abstract domain should not be too hard. It should suffice to implement the methods from AbstractValue class. 
-
-A bit surprising is that the fixpoint uses SSI (Static Single Information) form.
+  * FixpointSSI. This class implements an intraprocedural generic 
+forward abstract interpreter. It is generic in the sense that it calls only methods from the virtual class AbstractValue. To plug in a new abstract domain should not be too hard. It should suffice to implement the methods from AbstractValue class. (It is worth mentioning that the fixpoint although sound it is imprecise for relational abstract domains due to the separate treatment of phi nodes.) The fixpoint is quite standard except in the use of SSI (Static Single Information) form.
 
 SSI form is an extension of SSA form that ensures that a
 variable can be used only once through any path in the CFG. To do
