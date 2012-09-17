@@ -57,5 +57,6 @@ Pass is the pass that we want to run:
   general options:
     -help                          print this message.
     -stats                         print stats.
-    -time                          print times of each pass. 
+    -time                          print times of each pass.
+    -dot-cfg                       print cfg in dot format. 
   }}}
