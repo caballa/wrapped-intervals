@@ -1,0 +1,12 @@
+=Brief Description of the Implementation=
+
+We provide two LLVM passes: -range-analysis and -wrapped-range-analysis. The former corresponds to the classical fixed-width interval analysis and the latter to our wrapped interval analysis.
+
+The implementation contains the following classes:
+
+- FixpointSSI
+- AbstractValue
+- BaseRange
+- Range
+- WrappedRange
+
