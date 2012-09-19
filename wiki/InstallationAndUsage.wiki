@@ -37,9 +37,11 @@
    }}}
 =Run= 
   {{{
-tools/run.sh -help
+Authors: Jorge. A Navas, Peter Schachte, Harald Sondergaard, and 
+         Peter J. Stuckey.
+The University of Melbourne 2012.
 
-Usage: tools/run.sh  prog[.c|.bc]  Pass [options] 
+Usage: $0  prog[.c|.bc]  Pass [options] 
 
 Pass is the pass that we want to run: 
   -wrapped-range-analysis        fixed-width wrapped interval analysis
@@ -47,6 +49,9 @@ Pass is the pass that we want to run:
     options:
       -widening n                n is the widening threshold (0: no widening)
       -narrowing n               n is the number of narrowing iterations (0: no narrowing)
+      -alias                     by default, -no-aa which always return maybe. If enabled 
+                                 then -basic-aa and -globalsmodref-aa are run to be more precise
+                                 with global variables.
       -enable-optimizations      enable LLVM optimizations
       -inline n                  inline function calls whenever possible if the size of 
                                  the function is less than n. (0: no inlining). 
@@ -56,8 +61,9 @@ Pass is the pass that we want to run:
                                  instructions among many other things.
                                  
   general options:
-    -help                          print this message.
-    -stats                         print stats.
-    -time                          print times of each pass.
-    -dot-cfg                       print cfg in dot format. 
+    -help                          print this message
+    -stats                         print stats
+    -time                          print LLVM time passes
+    -dot-cfg                       print .dot file of the LLVM IR
+    -debug                         print debugging messages
   }}}
