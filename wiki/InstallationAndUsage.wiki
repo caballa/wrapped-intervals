@@ -37,10 +37,6 @@
    }}}
 =Run= 
   {{{
-Authors: Jorge. A Navas, Peter Schachte, Harald Sondergaard, and 
-         Peter J. Stuckey.
-The University of Melbourne 2012.
-
 Usage: ./run.sh prog[.c|.bc]  Pass [options] 
 
 Pass is the pass that we want to run: 
