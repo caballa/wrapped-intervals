@@ -34,10 +34,11 @@
   ./configure --with-llvmsrc=LLVM_SRC
   ./make
    cd docs && make
+   change variable WRAPPED_PATH in tools/run.sh properly
    }}}
 =Run= 
   {{{
-Usage: ./run.sh prog[.c|.bc]  Pass [options] 
+Usage: tools/run.sh prog[.c|.bc]  Pass [options] 
 
 Pass is the pass that we want to run: 
   -wrapped-range-analysis        fixed-width wrapped interval analysis
