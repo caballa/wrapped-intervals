@@ -1,0 +1,44 @@
+Authors: Jorge. A Navas, Peter Schachte, Harald Sondergaard, and 
+         Peter J. Stuckey.
+The University of Melbourne 2012.
+
+Checkout and installation of LLVM and Clang
+================================================================
+
+1) Get the required tools
+   See http://llvm.org/docs/GettingStarted.html#requirements
+
+2) Checkout LLVM:
+   LLVM_SRC=any_directory_you_like
+   svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm
+   Download svn revision 139364
+
+3) Checkout Clang (C/C++ frontend):
+   cd LLVM_SRC/tools
+   svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
+   To avoid conflicts between llvm and clang versions make sure you
+   download clang version 3.0 tags/RELEASE_30/final 145349
+
+4) Build LLVM and Clang:
+
+   cd .. (back to where you started)
+   mkdir build (for building without polluting the source dir)
+   cd build
+   ../configure (you may need CC=gcc ../configure)
+   make
+   This builds both LLVM and Clang for debug mode.
+
+Checkout and installation the Wrapped Interval Analysis
+================================================================
+
+   svn checkout http://wrapped-intervals.googlecode.com/svn/trunk/ wrapped-intervals
+   cd wrapped-intervals
+  ./configure --with-llvmsrc=LLVM_SRC
+  ./make
+  cd ./docs && make
+   
+Run 
+================================================================
+
+  cd tools
+  ./run.sh -help 
