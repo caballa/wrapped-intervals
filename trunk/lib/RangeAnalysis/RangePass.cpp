@@ -60,7 +60,7 @@ cl::opt<unsigned> Inline("Inline",
 // For printing more information
 #define MORE_COMPARISON_DETAILS
 // For printing analysis results
-//#define PRINT_RESULTS
+#define PRINT_RESULTS
 
 namespace unimelb {
 
