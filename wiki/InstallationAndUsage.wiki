@@ -15,7 +15,7 @@
    cd LLVM_SRC/tools
    svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
    To avoid conflicts between llvm and clang versions make sure you
-   download clang version 3.0 tags/RELEASE_30/final 145349
+   download clang version 3.0 tags/RELEASE_30/final 139290 
    }}}
 4) Build LLVM and Clang:
    {{{
