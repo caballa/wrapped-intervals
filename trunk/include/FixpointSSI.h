@@ -226,7 +226,7 @@ namespace unimelb {
     FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA);
     FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA, bool isSigned);
     /// Destructor of the class
-    ~FixpointSSI();
+    virtual ~FixpointSSI();
     /// Methods for support type inquiry through isa, cast, and dyn_cast.
     static inline bool classof(const FixpointSSI *) { return true; }
    
