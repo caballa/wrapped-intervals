@@ -1245,6 +1245,19 @@ void FixpointSSI::visitTerminatorInst(TerminatorInst &TI){
     DEBUG(dbgs() << "Conditional branch: " << *Branch << "\n") ;
     assert(Branch->getNumSuccessors() == 2);
 
+    // Special cases if constants true or false
+    if (isTrueConstant(Branch->getCondition())){
+      DEBUG(dbgs() << "\tthe branch condition is MUST BE TRUE.\n") ;
+      markEdgeExecutable(Branch->getParent(),Branch->getSuccessor(0));
+      return;
+    }
+    if (isFalseConstant(Branch->getCondition())){
+      DEBUG(dbgs() << "\tthe branch condition is MUST BE FALSE.\n") ;		    
+      markEdgeExecutable(Branch->getParent(),Branch->getSuccessor(1));		
+      return;
+    }
+
+    // We do not keep track of the flag so everything can happen
     if (!isTrackedCondFlag(Branch->getCondition())){
 	DEBUG(dbgs() << "\tthe branch condition is MAY-TRUE/MAY-FALSE.\n") ;
 	markEdgeExecutable(Branch->getParent(),Branch->getSuccessor(0));
