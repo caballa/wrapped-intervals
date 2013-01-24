@@ -36,7 +36,6 @@ Checkout and installation the Wrapped Interval Analysis
   ./configure --with-llvmsrc=LLVM_SRC
   ./make
   cd ./docs && make
-  change variable WRAPPED_PATH in tools/run.sh propertly (this is temporary)
    
 Run 
 ================================================================
