@@ -111,8 +111,8 @@ while [ "$3" != "" ]; do
 	    ;;
 	-debug)
 	    shift
-	    GENERAL_OPTS="$GENERAL_OPTS -debug-only=RangeAnalysis "
-#	    GENERAL_OPTS="$GENERAL_OPTS -debug "
+#	    GENERAL_OPTS="$GENERAL_OPTS -debug-only=RangeAnalysis "
+	    GENERAL_OPTS="$GENERAL_OPTS -debug "
 	    ;;
 	-time)
 	    shift
