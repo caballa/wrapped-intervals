@@ -263,15 +263,19 @@ namespace unimelb {
 
   /// Return true if the analysis will consider F.
   bool IsAnalyzable(const Function *F, CallGraph &CG){
-    if (!Utilities::IsTrackableFunction(F)) return false;
-    if (F->getName() == "main") return true;
-    if (CallGraphNode * CG_F = CG[F]){
-      if (CG_F->getNumReferences() == 1){
-    	// The function is either unreachablle, external, or inlined.
-    	return false;
-      }
-    }
-    return true;
+    return (Utilities::IsTrackableFunction(F));
+
+    // The numbers reported in the APLAS paper were obtained by
+    // ignoring functions which were not called by "main".
+    //if (!Utilities::IsTrackableFunction(F)) return false;
+    // if (F->getName() == "main") return true;
+    // if (CallGraphNode * CG_F = CG[F]){
+    //   if (CG_F->getNumReferences() == 1){
+    // 	// The function is either unreachablle, external, or inlined.
+    // 	return false;
+    //   }
+    // }
+    //return true;
   }
 
   /// Common analyses needed by the range analysis.
@@ -298,7 +302,7 @@ namespace unimelb {
 						    SIGNED_RANGE_ANALYSIS);
       for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
        	if (IsAnalyzable(F,*CG)){
-      // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
+	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
 	  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
 	  Analysis->init(F);
 	  Analysis->solve(F);
@@ -560,11 +564,16 @@ namespace unimelb {
       Out << "                         Summary results                                \n";
       Out << "=----------------------------------------------------------------------=\n";
       Out << "# tracked intervals              : "  <<  NumTotal << "\n";
-      Out << "# trivial intervals              : "  <<  NumOfTrivial << " // top or bottom. \n";
-      Out << "# non-trivial intervals          : "  <<  NumTotal - NumOfTrivial << "\n\n";
+      Out << "# top/bottom intervals           : "  <<  NumOfTrivial << "\n";
+      Out << "# non top/bottom  intervals      : "  <<  NumTotal - NumOfTrivial << "\n\n";
       Out << "# intervals same precision       : "  <<  NumOfSame << "\n";
       Out << "# wrapped more precise because unwrappred top : "  <<  NumWrappedIsBetter1   << "   // hopefully > 0. \n";     
       Out << "# wrapped more precise                        : "  <<  NumWrappedIsBetter2   << "   // hopefully > 0. \n";     
+
+      // FIXME: classical intervals cannot be more precise than
+      // Wrapped ones. However, it's possible that classical intervals
+      // implement a case which is not implemented precisely with
+      // Wrapped.
       Out << "# intervals more precise         : "  <<  NumUnWrappedIsBetter << "   // should be 0. \n";
       // Out << "# incomparable intervals         : "  <<  NumOfIncomparable << "\n\n";   
     }

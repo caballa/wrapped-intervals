@@ -105,16 +105,22 @@ namespace unimelb {
 
       if (F->hasFnAttr(Attribute::AlwaysInline)) return false;
 
-      if (!F->mayBeOverridden()){
-	if (AddressIsTaken(F)){
-	  //DEBUG(dbgs() << "\t" << F->getName() << " is passed as a pointer.\n");
-	  return false;
-	}  
-	else
-	  return true;
+      if (!F->mayBeOverridden()){       
+	// Since we do not perform inter-procedural analysis and we
+	// always analyze each function assuming worst-case scenario the analysis
+	// of a function is sound even if its address can be taken.
+	// The numbers reported in the APLAS paper were obtained by
+	// ignoring functions whose addresses can be taken.
+	/* if (AddressIsTaken(F)){ */
+	/*   //DEBUG(dbgs() << "\t" << F->getName() << " is passed as a pointer.\n"); */
+	/*   return false; */
+	/* }   */
+	/* else */
+	return true;
       }
       else{
 	//DEBUG(dbgs() << "\t" << F->getName() << " may be overriden.\n");
+	dbgs() << "\t" << F->getName() << " may be overriden.\n";
 	return false;
       }
     }
