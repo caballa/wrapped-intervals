@@ -39,8 +39,8 @@
 #include "llvm/ADT/Statistic.h"
 
 /// Wrapped intervals do not make any distinction whether variables
-/// are signed or not since the analysis is signed-agnostic. 
-/// Therefore, by default We assume that all operations are unsigned
+/// are signed or not since the analysis is signed-agnostic.
+/// Therefore, by default we assume that all operations are unsigned
 /// except those that really depend on the sign (e.g. division,
 /// comparisons, etc)
 #define __SIGNED false  // false means unsigned by default.
@@ -81,8 +81,8 @@ namespace unimelb {
     BaseRange(lb,ub,Width,__SIGNED),  __isBottom(false){ }
 
     /// Copy constructor of the class.
-    WrappedRange(const WrappedRange& I ): BaseRange(I){
-    __isBottom = I.__isBottom;}
+    WrappedRange(const WrappedRange& other ): BaseRange(other){
+    __isBottom = other.__isBottom;}
 
     /// Destructor of the class.
     ~WrappedRange(){}

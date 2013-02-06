@@ -10,4 +10,6 @@ SOURCES=FixpointSSI.cpp
 
 DIRS=RangeAnalysis Transformations
 
+CXX.Flags += -Wnon-virtual-dtor
+
 include $(LEVEL)/Makefile.common
