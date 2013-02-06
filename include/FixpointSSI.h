@@ -242,7 +242,7 @@ namespace unimelb {
     /* /// Gather some quick stats. */
     /* void gatherStats(); */
     /// To provide the analysis results to other passes.
-    AbstractStateTy getValMap() { return ValueState; } 
+    AbstractStateTy getValMap() const { return ValueState; } 
 
     /// Create a bottom abstract value.
     virtual AbstractValue* initAbsValBot(Value *) = 0;

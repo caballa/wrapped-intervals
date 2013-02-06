@@ -105,6 +105,7 @@ namespace unimelb {
     virtual void join(AbstractValue * V) = 0;
     /// Meet two abstract values V1 and V2 and store the result in
     /// this.
+    /// \todo It would be more convenient to be a friend
     virtual void meet(AbstractValue *V1, AbstractValue *V2) = 0;
     /// Return true if this is less or equal than V.
     virtual bool lessOrEqual(AbstractValue *V) = 0;

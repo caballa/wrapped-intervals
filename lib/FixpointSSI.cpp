@@ -31,6 +31,8 @@
 ///
 /// Another source of imprecision is cast instructions from floating
 /// or pointers to integers which are not tracked by the analysis.
+///
+/// \todo Make sure there is no memory leaks.
 /////////////////////////////////////////////////////////////////////////////////
 #include "FixpointSSI.h"
 #include "AbstractValue.h"
@@ -1103,7 +1105,9 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
       else{
 	// PHI node
 	AbstractValue *AbsValNew = AbsVal->clone();
-	ResetAbstractValue(AbsValNew);
+	//ResetAbstractValue(AbsValNew);
+	AbsValNew->makeBot();
+
 	DEBUG(dbgs() << "PHI node " << PN << "\n");
 	// if (WrappedRange * WrappedRangeVal = dyn_cast<WrappedRange>(AbsValNew)){
 	//   visitPHINode(WrappedRangeVal,PN);	  

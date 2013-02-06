@@ -162,7 +162,6 @@ namespace unimelb {
       /* } */
     }
     /// Give access to the map.
-    MapValToAbstractTy getValMap(){ return valMap;}
     MapValToAbstractTy getValMap() const { return valMap;}
     /// Give access to the basic block.
     BasicBlock* getBasicBlock(){ return B; }

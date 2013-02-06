@@ -16,6 +16,7 @@
 /// \li the operation does not depend on the sign but after we cut at
 ///     the poles we can then make assumptions about the signs.
 ///
+/// \todo There are many memory leaks: need to fix.
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "BaseRange.h"
@@ -169,8 +170,8 @@ void WrappedRange::widening(AbstractValue *PreviousV, const SmallPtrSet<Constant
   dbgs() << ")=" ;
 #endif 
 
-  WrappedRange *Merged = new WrappedRange(*Old);
-  Merged->join(New);  
+  WrappedRange Merged(*Old);
+  Merged.join(New);  
   if (Old->lessOrEqual(New) &&  
       (!Old->WrappedMember(x, __SIGNED) && !Old->WrappedMember(y, __SIGNED))) {
 #ifdef DEBUG_WIDENING
@@ -195,11 +196,11 @@ void WrappedRange::widening(AbstractValue *PreviousV, const SmallPtrSet<Constant
 
 #ifdef DEBUG_WIDENING
   dbgs() << "Upper bound of old and new value: ";
-  Merged->printRange(dbgs());
+  Merged.printRange(dbgs());
   dbgs() << "\n";
 #endif 
   // We are increasing
-  if ( (Merged->getLB() == u) && (Merged->getUB() == y)){
+  if ( (Merged.getLB() == u) && (Merged.getUB() == y)){
 #ifdef DEBUG_WIDENING
     dbgs() << "Widening: the new value is increasing.\n";
 #endif 
@@ -230,7 +231,7 @@ void WrappedRange::widening(AbstractValue *PreviousV, const SmallPtrSet<Constant
   }
 
   // We are decreasing
-  if ( (Merged->getLB() == x) && (Merged->getUB() == v)){
+  if ( (Merged.getLB() == x) && (Merged.getUB() == v)){
     APInt cardOld  = WCard(u,v);
     // Overflow check   
     if (checkOverflowForWideningJump(cardOld)){
@@ -345,16 +346,6 @@ void WrappedRange::print(raw_ostream &Out) const{
     BaseRange::print(Out);
 }
 
-// Just a wrapper.
-void WrappedRange::WrappedJoin2(WrappedRange *R1, WrappedRange *R2){
-  WrappedRange *Tmp = new WrappedRange(*R1);
-  Tmp->WrappedJoin(R2, __SIGNED);
-  setLB(Tmp->getLB());
-  setUB(Tmp->getUB());
-  __isBottom = Tmp->__isBottom;
-  delete Tmp;
-}
-
 void WrappedRange::join(AbstractValue *V){
   // Join is mostly called when a phi node is encountered. At that
   // point, we cannot make any assumption about signedeness so we need
@@ -371,16 +362,24 @@ void WrappedRange::join(AbstractValue *V){
     WrappedRange::ssplit(R->getLB(), R->getUB(), R->getLB().getBitWidth());
   std::vector<WrappedRange*> s2 = 
     WrappedRange::ssplit(getLB(), getUB(), getLB().getBitWidth());
+
   for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
     for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
-      // we could use GeneralizedJoin to get more precise results.
+      // FIXME: use GeneralizedJoin to get more precise results.
       this->WrappedJoin2((*I1), (*I2));
     }
   }
   normalizeTop();
 }
 
+// Just a wrapper.
+void WrappedRange::WrappedJoin2(WrappedRange *R1, WrappedRange *R2){
+  WrappedJoin(R1, __SIGNED);
+  WrappedJoin(R2, __SIGNED);
+}
+
 void WrappedRange::WrappedJoin(AbstractValue *V, bool IsSigned){
+
   WrappedRange *S = this;
   WrappedRange *T = cast<WrappedRange>(V);
 
@@ -552,11 +551,11 @@ void Extend(WrappedRange * &R1, WrappedRange *R2){
 WrappedRange * Bigger(WrappedRange *R1, WrappedRange *R2){
 
   if (R1->isBot() && !R2->isBot())
-    return R2;
+    return new WrappedRange(*R2);
   if (R2->isBot() && !R1->isBot())
-    return R1;
+    return new WrappedRange(*R1);
   if (R2->isBot() && R1->isBot())
-    return R1;
+    return new WrappedRange(*R1);
 
   APInt a = R1->getLB();
   APInt b = R1->getUB();
@@ -708,6 +707,10 @@ void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
   
   WrappedRange * R1 = cast<WrappedRange>(V1);
   WrappedRange * R2 = cast<WrappedRange>(V2);
+
+  this->makeBot();
+  WrappedRange * tmp = new WrappedRange(*this);
+
   // **SOUTH POLE SPLIT** 
   std::vector<WrappedRange*> s1 = 
     WrappedRange::ssplit(R1->getLB(), R1->getUB(), R1->getLB().getBitWidth());
@@ -715,9 +718,13 @@ void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
     WrappedRange::ssplit(R2->getLB(), R2->getUB(), R2->getLB().getBitWidth());
   for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
     for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
-      this->WrappedMeet((*I1),(*I2), __SIGNED);
+      // Note that we need to meet each pair of segments and then join
+      // the result of all of them.
+      tmp->WrappedMeet((*I1),(*I2), __SIGNED);
+      this->WrappedJoin(tmp, __SIGNED);
     }
   }
+  delete tmp;
 }
 
 
@@ -1107,6 +1114,8 @@ void WrappedRange::filterSigma(unsigned Pred, AbstractValue *V1, AbstractValue *
     }
   } //end for
   this->normalizeTop();    
+
+  delete Tmp;
   return;
 }
 
@@ -1401,6 +1410,7 @@ std::vector<WrappedRange*> WrappedRange::nsplit(APInt x, APInt y, unsigned width
     // No need of split
     res.push_back(s);
     // dbgs() << "No split for: " << "[" << x << "," << y << "]" << "\n ";  
+
     // delete NP;
     return res;
   }
@@ -1418,7 +1428,8 @@ std::vector<WrappedRange*> WrappedRange::nsplit(APInt x, APInt y, unsigned width
 
   res.push_back(s1);
   res.push_back(s2);
-  //  delete NP;
+
+  // delete NP;
   // delete s;  
   return res;  
 }
@@ -1438,6 +1449,7 @@ std::vector<WrappedRange*> WrappedRange::ssplit(APInt x, APInt y, unsigned width
     //                         ^^^^^ unsigned
     // No need of split
     res.push_back(s);
+
     //  delete SP;
     return res;
   }
@@ -1447,6 +1459,7 @@ std::vector<WrappedRange*> WrappedRange::ssplit(APInt x, APInt y, unsigned width
   WrappedRange *s2  = new WrappedRange(SP_ub,y,width); // [000...0,  y] 
   res.push_back(s1);
   res.push_back(s2);
+
   //delete SP;
   //delete s;
   return res;  
@@ -1551,6 +1564,7 @@ void SignedUnsignedWrappedMult(WrappedRange *Res,
   UnsignedWrappedMult(Tmp1,Op1,Op2);
   SignedWrappedMult(Tmp2,Op1,Op2);
   Res->WrappedMeet(Tmp1,Tmp2, __SIGNED);
+
   //delete Tmp1;
   //delete Tmp2;      
 }
@@ -1580,6 +1594,7 @@ void WrappedRange::WrappedMultiplication(WrappedRange *LHS,
       LHS->join(Tmp);
     }
   }
+
   // delete Tmp;
 }
 
@@ -1623,6 +1638,7 @@ void WrappedRange::WrappedDivisionAndRem(unsigned Opcode,
 	LHS->join(Tmp);
       }
     }
+
     //delete Tmp;
   }
   else{
@@ -1643,6 +1659,7 @@ void WrappedRange::WrappedDivisionAndRem(unsigned Opcode,
 	LHS->join(Tmp);
       }
     }
+
     //delete Tmp;
   }
 }
@@ -1850,6 +1867,8 @@ AbstractValue* WrappedRange::visitCast(Instruction &I,
   
  END:
   LHS->normalizeTop();    
+  // if (!V)
+  //   delete RHS;
   DEBUG(dbgs() << "\t[RESULT]");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");      

@@ -298,21 +298,19 @@ namespace unimelb {
       dbgs() <<"\n===-------------------------------------------------------------------------===\n" ;  
       dbgs() << "               Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n" ;      
-      RangeAnalysis * Analysis =  new RangeAnalysis(&M, widening , narrowing , AA,
-						    SIGNED_RANGE_ANALYSIS);
+      RangeAnalysis Analysis(&M, widening , narrowing , AA, SIGNED_RANGE_ANALYSIS);
       for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
        	if (IsAnalyzable(F,*CG)){
 	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
 	  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	  Analysis->init(F);
-	  Analysis->solve(F);
+	  Analysis.init(F);
+	  Analysis.solve(F);
 #ifdef  PRINT_RESULTS 	  
-	  //Analysis->printResultsGlobals(dbgs());
-	  Analysis->printResultsFunction(F,dbgs());
+	  //Analysis.printResultsGlobals(dbgs());
+	  Analysis.printResultsFunction(F,dbgs());
 #endif  /*PRINT_RESULTS*/
 	}
       }
-      delete Analysis;
       return false;
     }
 
@@ -334,20 +332,19 @@ namespace unimelb {
       dbgs() <<"\n===-------------------------------------------------------------------------===\n";  
       dbgs() << "               Wrapped Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n";      
-      WrappedRangeAnalysis * Analysis =  new WrappedRangeAnalysis(&M, widening , narrowing , AA);
+      WrappedRangeAnalysis Analysis(&M, widening , narrowing , AA);
       for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
 	if (IsAnalyzable(F,*CG)){
 	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
 	  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	  Analysis->init(F);
-	  Analysis->solve(F);
+	  Analysis.init(F);
+	  Analysis.solve(F);
 #ifdef  PRINT_RESULTS 	  
-	  //Analysis->printResultsGlobals(dbgs());
-	  Analysis->printResultsFunction(F,dbgs());
+	  //Analysis.printResultsGlobals(dbgs());
+	  Analysis.printResultsFunction(F,dbgs());
 #endif  /*PRINT_RESULTS*/
 	}
       }
-      delete Analysis;
       return false;
     }
 
@@ -389,18 +386,18 @@ namespace unimelb {
       AliasAnalysis *AA = &getAnalysis<AliasAnalysis>(); 
       CallGraph     *CG = &getAnalysis<CallGraph>();
 
-      RangeAnalysis * Intervals = new RangeAnalysis(&M, widening,narrowing, AA, SIGNED_RANGE_ANALYSIS);
-      WrappedRangeAnalysis * WrappedIntervals = new WrappedRangeAnalysis(&M, widening, narrowing,  AA);
+      RangeAnalysis Intervals(&M, widening,narrowing, AA, SIGNED_RANGE_ANALYSIS);
+      WrappedRangeAnalysis WrappedIntervals(&M, widening, narrowing,  AA);
       for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
        	if (IsAnalyzable(F,*CG)){
 	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
 	  dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
 	  dbgs() << "----------------   running Range Analysis ... -----------------------\n";
-	  Intervals->init(F);
-	  Intervals->solve(F);
+	  Intervals.init(F);
+	  Intervals.solve(F);
 	  dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
-	  WrappedIntervals->init(F);
-	  WrappedIntervals->solve(F);
+	  WrappedIntervals.init(F);
+	  WrappedIntervals.solve(F);
 	  // Gather statistics after the analysis of the function.
 	  // After than, each analysis will cleanup *all* their
 	  // datastructures.
@@ -408,10 +405,7 @@ namespace unimelb {
 	}
       } // end for
       
-      printStats(dbgs());
-     
-      delete Intervals;
-      delete WrappedIntervals;
+      printStats(dbgs());     
       return false;
     }
     virtual void getAnalysisUsage(AnalysisUsage& AU) const {
@@ -430,13 +424,13 @@ namespace unimelb {
     unsigned NumOfIncomparable;
     unsigned NumOfTrivial;
 
-    void compareAnalysesOfFunction(RangeAnalysis * Intervals,
-				   WrappedRangeAnalysis * WrappedIntervals){
+    void compareAnalysesOfFunction(const RangeAnalysis &Intervals,
+				   const WrappedRangeAnalysis &WrappedIntervals){
 
       // We cannot assume a particular order of the entries since LLVM
       // can generate different orders
-      AbstractStateTy IntervalMap         = Intervals->getValMap();
-      AbstractStateTy WrappedIntervalMap  = WrappedIntervals->getValMap();     
+      AbstractStateTy IntervalMap         = Intervals.getValMap();
+      AbstractStateTy WrappedIntervalMap  = WrappedIntervals.getValMap();     
       // This is expensive because is n*m where n,m sizes of the two
       // hash tables. Most of the time, n is equal to m.
       typedef AbstractStateTy::iterator It;
@@ -524,6 +518,7 @@ namespace unimelb {
       
       if (I2->isEqual(NewI1)) {
 	NumOfSame++;
+	delete NewI1;
 	return;
       }
 
