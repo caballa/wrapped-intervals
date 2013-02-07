@@ -1008,6 +1008,12 @@ bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma,
   return FilteredDone;
 }
 
+// Simply assign RHSSigma to LHSSigma.
+void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma){
+  ResetAbstractValue(LHSSigma);
+  LHSSigma->join(Lookup(RHSSigma,true));
+}
+
 // Execute a sigma node in two steps. The execution consists of
 // assigning RHSSigma to LHSSigma. Additionally, knowledge from BI is
 // used to improve LHSSigma. First it generates any filter that it can
@@ -1015,6 +1021,7 @@ bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma,
 // the filters.
 void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma,
 				 BasicBlock *SigmaBB, BranchInst * BI){				 
+
   // Note that for each sigma node we create its filters over and over
   // again. An improvement would be to cache those filters to avoid
   // recomputing them. However, even if we recompute them it does not
@@ -1026,7 +1033,6 @@ void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma,
     ResetAbstractValue(LHSSigma);
     LHSSigma->join(Lookup(RHSSigma,true));
   }
-
 }
 
 
@@ -1092,8 +1098,11 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
 	AbstractValue * NewAbsVal = AbsVal->clone();  	
 	if (TerminatorInst * TI  = PN.getIncomingBlock(0)->getTerminator()){
 	  if (BranchInst * BI  = dyn_cast<BranchInst>(TI)){
-	    assert(BI->isConditional());
-	    visitSigmaNode(NewAbsVal, PN.getIncomingValue(0), PN.getParent(), BI);
+	    //assert(BI->isConditional());
+	    if (BI->isConditional())
+	      visitSigmaNode(NewAbsVal, PN.getIncomingValue(0), PN.getParent(), BI);
+	    else
+	      visitSigmaNode(NewAbsVal, PN.getIncomingValue(0));
 	  }
 	}
 	PRINTCALLER("visitSigmaNode");

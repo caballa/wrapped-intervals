@@ -294,6 +294,7 @@ namespace unimelb {
     /// Execute a Comparison instruction I.
     void visitComparisonInst(ICmpInst &I);
     /// Execute a Sigma instruction
+    void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma);
     void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma, BasicBlock *, BranchInst * BI);
     void generateFilters(Value *, Value *, BranchInst *, BasicBlock *, FiltersTy &);
     bool evalFilter(AbstractValue * &, Value *, const FiltersTy );
