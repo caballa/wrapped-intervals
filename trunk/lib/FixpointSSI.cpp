@@ -279,6 +279,13 @@ void FixpointSSI::computeOneNarrowingIter(Function *F){
 void FixpointSSI::computeNarrowing(Function *EntryF){
   unsigned N = NarrowingLimit;
   NarrowingPass=true;
+
+  // We should clear these datastructures before starting narrowing.
+  // Otherwise, narrowing cannot make unreachable a block that was
+  // reachable for the fixpoint.
+  // BBExecutable.clear();
+  // KnownFeasibleEdges.clear();
+
   while (N-- > 0){
     DEBUG(dbgs () << "\nStarting narrowing  ... \n");
     NumOfNarrowings++;    
