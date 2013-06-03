@@ -1,10 +1,10 @@
 #include <stdio.h>
 int foo() {
   int k = 0;
-  while (k < 100) {
+  while (100> k) {
     int i = 0;
     int j = k;
-    while (i < j) {
+    while (j > i) {
       i = i + 1;
       j = j - 1;
     }
