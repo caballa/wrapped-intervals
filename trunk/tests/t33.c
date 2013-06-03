@@ -9,7 +9,8 @@ signed char foo(){
   while (i>=0){
     i=i+1;
   }
-  return i;
+  return i; // fixed-width intervals [-128,-1]
+            // wrapped intervals     [-128,-128]
 }
 
 int main(){
