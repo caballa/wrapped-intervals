@@ -1,7 +1,7 @@
 #include <stdio.h>
 
 int foo(int k) {
-  while (k < 100) {
+  while (k < 10000) {
     int i = 0;
     int j = k;
     while (i < j) {

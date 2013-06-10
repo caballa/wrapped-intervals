@@ -10,7 +10,7 @@ int main(){
   int x4,y4,z8;
   int x5,y5,z9;
   int x6,y6,z10;
- 
+
   INTERVAL(p1,x1,2,3);
   INTERVAL(p2,y1,9,10);
 
@@ -45,7 +45,6 @@ int main(){
   INTERVAL(p2,y5,20,45);
 
   z9 = x5 % y5; // z7 = [-44,44]
-
     
   return 0;
 }
