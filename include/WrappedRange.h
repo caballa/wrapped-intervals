@@ -13,7 +13,9 @@
 ///
 /// Moreover, very importantly this analysis is sign-agnostic. That
 /// is, it does not make any assumption about sign of variables in
-/// opposite to Range and BaseRange classes.
+/// opposite to Range and BaseRange classes. However, the abstract
+/// domain does not form a lattice so special care is needed since
+/// joins and meets are neither monotone nor associate.
 ///
 /// For details, we refer to "Signedness-Agnostic Program Analysis:
 /// Precise Integer Bounds for Low-Level Code" by J. A. Navas,
@@ -38,29 +40,34 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Statistic.h"
 
+#include <tr1/memory>
+
 /// Wrapped intervals do not make any distinction whether variables
 /// are signed or not since the analysis is signed-agnostic.
 /// Therefore, by default we assume that all operations are unsigned
 /// except those that really depend on the sign (e.g. division,
 /// comparisons, etc)
 #define __SIGNED false  // false means unsigned by default.
-
+#define DEBUG_TYPE "RangeAnalysis"
 namespace unimelb {
+
+  class WrappedRange;
+  typedef std::tr1::shared_ptr<WrappedRange>  WrappedRangePtr;
 
   class WrappedRange: public BaseRange {
   public:      
     virtual BaseId getValueID() const { return WrappedRangeId; }
-
     /// Constructor of the class.
-    WrappedRange(Value *V):  BaseRange(V, __SIGNED), __isBottom(false){}
+    WrappedRange(Value *V):  
+      BaseRange(V, __SIGNED, false), __isBottom(false){}
     
     /// Constructor of the class for an integer constant.
     WrappedRange(const ConstantInt *C, unsigned Width): 
-    BaseRange(C,Width, __SIGNED), __isBottom(false){ }
+      BaseRange(C,Width, __SIGNED, false), __isBottom(false){ }
 
     /// Constructor of the class for a TBool object 
     WrappedRange(Value *V, TBool * B):
-    BaseRange(V, __SIGNED), __isBottom(false){
+      BaseRange(V, __SIGNED, false), __isBottom(false){
       if (B->isTrue()){
 	setLB((uint64_t) 1); 
 	setUB((uint64_t) 1);
@@ -78,7 +85,7 @@ namespace unimelb {
     /// Constructor of the class for APInt's 
     /// For temporary computations.
     WrappedRange(APInt lb, APInt ub, unsigned Width): 
-    BaseRange(lb,ub,Width,__SIGNED),  __isBottom(false){ }
+      BaseRange(lb,ub,Width,__SIGNED,false),  __isBottom(false){ }
 
     /// Copy constructor of the class.
     WrappedRange(const WrappedRange& other ): BaseRange(other){
@@ -89,37 +96,32 @@ namespace unimelb {
 
     /// Cardinality of a wrapped interval.
     static inline APInt WCard(APInt x, APInt y){
-      if (x == y+1){
+      if (x == y+1){  // ie., if [MININT,MAXINT}
 	APInt card = APInt::getMaxValue(x.getBitWidth());
-	//dbgs() << "Cardinality of ["<< x << "," << y << "]= " << card.toString(10,false) << "\n";	
+	// FIXME: getMaxValue(width) is actually 2^w - 1. 
+	// It should be card here 2^w
 	return card;
       }
       else{
-	// implicitly we use mod 2^w where w is the width of x and y.
+	// Implicitly we use mod 2^w where w is the width of x and y.
 	// since APInt will wraparound if overflow.
 	APInt card = (y - x) + 1;
-	//dbgs() << "Cardinality of ["<< x << "," << y << "]= " << card.toString(10,false) << "\n";
 	return card; 
       }
     }
 
     /// To try to have a single representation of top (e.g., [1,0],
-    /// [2,1], [-1,-2], etc). This is
-    /// not needed for correctness but it is vital for a fair
+    /// [2,1], [-1,-2], [MININT,MAXINIT], etc). This is not needed for
+    /// correctness but it is vital for presentation and a fair
     /// comparison with other analyses.
     inline void normalizeTop(){
       if (isBot()) return;
 
-      if (WCard(LB,UB) == APInt::getMaxValue(LB.getBitWidth())) {
-      	//print(dbgs());
-      	DEBUG(dbgs() << "Normalizing [" << LB << "," << UB << "]" << " to top interval\n");
+      if (LB == UB+1){ // implicitly using mod 2^w
+      	DEBUG(dbgs() << "Normalizing [" << LB << "," << UB << "]"
+	             << " to top interval.");
       	makeTop();
       }
-      /* else if (LB == UB + 1){ */
-      /* 	dbgs() << "Normalizing [" << LB << "," << UB << "]" << " to top interval\n"; */
-      /*  	makeTop();  */
-      /* 	DEBUG(dbgs() << "Normalizing top interval.\n");  */
-      /* } */
     }
 
     void convertWidenBoundsToWrappedRange(APInt, APInt);
@@ -140,11 +142,13 @@ namespace unimelb {
     }
 
 
+    virtual bool isGammaSingleton() const;
     virtual bool isBot() const; 
     virtual bool IsTop() const ; 
     virtual void makeBot();
     virtual void makeTop();
     virtual void print(raw_ostream &Out) const;
+
     inline void WrappedRangeAssign(WrappedRange * V) {
       BaseRange::RangeAssign(V);
       __isBottom = V->__isBottom;
@@ -154,23 +158,25 @@ namespace unimelb {
     /// and north poles. The use of these guys are key for most of the
     /// arithmetic, casting and bitwise operations as well as comparison
     /// operators.
-    static std::vector<WrappedRange*> ssplit(APInt, APInt, unsigned);
-    static std::vector<WrappedRange*> nsplit(APInt, APInt, unsigned);
+    static std::vector<WrappedRangePtr> ssplit(APInt, APInt, unsigned);
+    static std::vector<WrappedRangePtr> nsplit(APInt, APInt, unsigned);
 
-    bool WrappedMember(APInt, bool);
-    bool WrappedlessOrEqual(AbstractValue *, bool);
+    bool WrappedMember(APInt) const;
+    bool WrappedlessOrEqual(AbstractValue *);
     virtual bool lessOrEqual(AbstractValue *);
-    virtual void WrappedJoin(AbstractValue *, bool);
+    virtual void WrappedJoin(AbstractValue *);
     virtual void join(AbstractValue *);
     /// Apply the join but considering the fact that the domain is not
     /// associative. Thus, it may be more precise than apply simply
     /// join repeatedly. It can be used for operations like
     /// multiplication and phi nodes with multiple incoming values.
-    virtual void GeneralizedJoin(std::vector<WrappedRange *>);
-    virtual void WrappedMeet(AbstractValue *, AbstractValue *, bool);
+    virtual void GeneralizedJoin(std::vector<AbstractValue *>);
     virtual void meet(AbstractValue *, AbstractValue *);
     virtual bool isEqual(AbstractValue*);
-    virtual void widening(AbstractValue *, const SmallPtrSet<ConstantInt*, 16>);
+    virtual void widening(AbstractValue *, const ConstantSetTy &);
+
+    /// Return true is this is syntactically identical to V.
+    virtual bool isIdentical(AbstractValue *V);
 
     /// To determine if the evaluation of a guard is true/false/maybe.
     virtual bool comparisonSle(AbstractValue *);
@@ -185,13 +191,18 @@ namespace unimelb {
 
 
     // Here abstract domain-dependent transfer functions
+    void WrappedPlus(WrappedRange *,
+		     const WrappedRange *, const WrappedRange *);
+    void WrappedMinus(WrappedRange *,
+		      const WrappedRange *, const WrappedRange *);
+    void WrappedMultiplication(WrappedRange *,
+			       const WrappedRange *, const WrappedRange *);
+    void WrappedDivision(WrappedRange *, 
+			 const WrappedRange *, const WrappedRange *, bool);    
+    void WrappedRem(WrappedRange *, 
+		    const WrappedRange *,const WrappedRange *, bool);    
 
-    // multiplication
-    void WrappedMultiplication(WrappedRange *, WrappedRange *,WrappedRange *);
-    // signed/unsigned division and rem
-    void WrappedDivisionAndRem(unsigned,
-			       WrappedRange *, WrappedRange *,WrappedRange *, bool);    
-    // addition, substraction, and rest
+    // addition, substraction, and the rest above
     virtual AbstractValue* visitArithBinaryOp(AbstractValue *, AbstractValue *,
 					      unsigned, const char *);
     // truncation, signed/unsigned extension
@@ -218,8 +229,16 @@ namespace unimelb {
     }
 
     /// Convenient wrapper.
-    void WrappedJoin2(WrappedRange *R1, WrappedRange *R2);
+    void Binary_WrappedJoin(WrappedRange *R1, WrappedRange *R2);
   };
+
+  inline raw_ostream& operator<<(raw_ostream& o, WrappedRange r) {
+    r.printRange(o);
+    return o;
+  }
+
+  WrappedRange WrappedMeet(WrappedRange *, WrappedRange *);
+
 
 } // end namespace
 

@@ -33,6 +33,16 @@
 /// or pointers to integers which are not tracked by the analysis.
 ///
 /// \todo Make sure there is no memory leaks.
+///
+/// The fixpoint is mostly designed for running a lattice. However, it
+/// can also run non-lattice abstract domains if some special care is
+/// taken. In particular:
+/// - if the abstract domain is not a lattice widening cannot be
+///   executed in a intermittent manner. Otherwise, the analysis may
+///   not terminate.
+/// - Specialized versions of joins to merge more than two abstract
+///   values are recommended to avoid losing precision since joins are
+///   not associative.
 /////////////////////////////////////////////////////////////////////////////////
 #include "FixpointSSI.h"
 #include "AbstractValue.h"
@@ -51,11 +61,11 @@ STATISTIC(NumOfSkippedIns    ,"Number of skipped instructions");
 
 // Debugging
 void printValueInfo(Value *,Function*);
-void printIntConstants(SmallPtrSet<ConstantInt*, 16>);
 void printUsersInst(Value *,SmallPtrSet<BasicBlock*, 16>,bool);
 inline void PRINTCALLER(std::string s){ /*dbgs() << s << "\n";*/ }
 
-FixpointSSI::FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA):
+FixpointSSI::
+FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA):
   M(M),
   WideningLimit(WL),
   NarrowingLimit(NL),
@@ -64,9 +74,14 @@ FixpointSSI::FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA
   IsAllSigned(true){
   if (WideningLimit == 0)
     dbgs() << "Warning: user selected no widening!\n";
+  if (NarrowingLimit == 0)
+    dbgs() << "Warning: user selected no narrowing!\n";
+
 }
 
-FixpointSSI::FixpointSSI(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA, bool isSigned):
+FixpointSSI::
+FixpointSSI(Module *M, unsigned WL, unsigned NL, 
+	    AliasAnalysis *AA, bool isSigned):
   M(M),
   WideningLimit(WL),
   NarrowingLimit(NL),
@@ -75,12 +90,18 @@ FixpointSSI::FixpointSSI(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA,
   IsAllSigned(isSigned){
   if (WideningLimit == 0)
     dbgs() << "Warning: user selected no widening!\n";
+  if (NarrowingLimit == 0)
+    dbgs() << "Warning: user selected no narrowing!\n";
   }
 
 FixpointSSI::~FixpointSSI(){
-  for (AbstractStateTy::iterator I = ValueState.begin(), E=ValueState.end(); I!=E; ++I)
+  for (AbstractStateTy::iterator 
+	 I = ValueState.begin(), 
+	 E=ValueState.end(); I!=E; ++I)
     delete I->second;
-  for (DenseMap<Value*,TBool*>::iterator I=TrackedCondFlags.begin(), E=TrackedCondFlags.end(); I!=E; ++I)
+  for (DenseMap<Value*,TBool*>::iterator 
+	 I=TrackedCondFlags.begin(), 
+	 E=TrackedCondFlags.end(); I!=E; ++I)
     delete I->second;
 }
 
@@ -108,10 +129,12 @@ void FixpointSSI::init(Function *F){
   if (Utilities::IsTrackableFunction(F)){
     // Add formal parameters as definitions and initialize the
     // abstract value
-    for (Function::arg_iterator argIt=F->arg_begin(),E=F->arg_end(); argIt != E; argIt++) {
+    for (Function::arg_iterator 
+	   argIt=F->arg_begin(),E=F->arg_end(); argIt != E; argIt++) {
       DEBUG(printValueInfo(argIt,F));
       if (isCondFlag(argIt)){
-	DEBUG(dbgs() << "\trecording a Boolean flag:" << argIt->getName() << "\n");
+	DEBUG(dbgs() << "\trecording a Boolean flag:" 
+	      << argIt->getName() << "\n");
 	TrackedCondFlags.insert(std::make_pair(&*argIt, new TBool()));
       }
       else{
@@ -144,7 +167,13 @@ void FixpointSSI::init(Function *F){
     } // end for    
     // Create an abstract value for each integer constant in the
     // program.
-    addTrackedIntegerConstants(F); 
+    std::vector<std::pair<Value*,ConstantInt*> > NewAbsVals;
+    Utilities::addTrackedIntegerConstants(F, IsAllSigned, 
+					  ConstSet, NewAbsVals); 
+    for (unsigned int i=0; i<NewAbsVals.size(); i++){
+      ValueState.insert(std::make_pair(NewAbsVals[i].first,
+				       initAbsIntConstant(NewAbsVals[i].second)));   
+    }
     // Record widening points.
     addTrackedWideningPoints(F);      
   }
@@ -192,7 +221,8 @@ void FixpointSSI::computeFixpo(){
 	// We check that the instruction U is defined in an executable
 	// block
         if (BBExecutable.count(U->getParent()) && U != I) {
-	  DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of " << *I << "\n");      
+	  DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of " 
+		<< *I << "\n");      
           visitInst(*U);
 	}
       } // end for
@@ -257,6 +287,7 @@ void FixpointSSI::computeFixpo(){
 /// corresponding transfer function for every one without
 /// widening. The instructions must be visited preserving the original
 /// order in the program.
+/// \lambda x. x /\ F(x)
 void FixpointSSI::computeOneNarrowingIter(Function *F){
   markBlockExecutable(&F->getEntryBlock());    
   // Iterator dfs over the basic blocks in the function
@@ -277,6 +308,9 @@ void FixpointSSI::computeOneNarrowingIter(Function *F){
 // Narrowing is implemented by making a arbitrary number of passes
 // applying the transfer functions **without** applying widening.
 void FixpointSSI::computeNarrowing(Function *EntryF){
+
+  if (NarrowingLimit == 0) return;
+
   unsigned N = NarrowingLimit;
   NarrowingPass=true;
 
@@ -297,13 +331,14 @@ void FixpointSSI::computeNarrowing(Function *EntryF){
   DEBUG(dbgs () << "Narrowing finished.\n");
 }
 
-bool FixpointSSI::isEdgeFeasible(BasicBlock *From, BasicBlock *To){
-  std::set<Edge>::iterator I =  KnownFeasibleEdges.find(std::make_pair(From,To));  
+bool FixpointSSI::
+isEdgeFeasible(BasicBlock *From, BasicBlock *To){
+  std::set<Edge>::iterator 
+    I =  KnownFeasibleEdges.find(std::make_pair(From,To));  
   if (I != KnownFeasibleEdges.end()) 
     return true;
   else{   
     NumOfInfeasible++;		  
-    // dbgs() << NumOfInfeasible << ": " << From->getName() << " --> " << To->getName() << " INFEASIBLE \n";
     return false;
   }
 }
@@ -337,13 +372,14 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
     ValueState[&Inst] = NewV;
   }
   else{
-    //////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
     // Widening:
     //             bottom         if n=0
-    // f^{n}_{w} = f^{n-1}_{w}    if n>0 and f(f^{n-1}_{w}) \subseteq f^{n-1}_{w}
+    // f^{n}_{w} = f^{n-1}_{w}    if n>0 and 
+    //                            f(f^{n-1}_{w}) \subseteq f^{n-1}_{w}
     //             widening(f^{n-1}_{w},f(f^{n-1}_{w})) otherwise
     // Here OldV = f^{n-1}_{w} and NewV = f(f^{n-1}_{w})
-    //////////////////////////////////////////////////////////////////////////////      
+    ////////////////////////////////////////////////////////////////////
     
     if (I != ValueState.end() && NewV->lessOrEqual(OldV)){
       // No change
@@ -353,13 +389,16 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
     
     NewV->incNumOfChanges();        
     if (Widen(&Inst,NewV->getNumOfChanges())){
+      //dbgs() << "WIDENING " <<  Inst << "\n";
+
       NumOfWidenings++;
       NewV->widening(OldV,ConstSet);
       // We reset the counter because we don't want to apply widening
       // if not really needed. E.g., after a widening we can have a
       // casting operation. If the counter is not reset then we will
       // do widening again with potential catastrophic losses.
-      NewV->resetNumOfChanges();
+      if (NewV->isLattice())
+	  NewV->resetNumOfChanges();
     }
     // there is change: visit uses of I.
     assert(NewV);
@@ -393,7 +432,7 @@ void FixpointSSI::updateCondFlag(Instruction &I, TBool * New){
 // Mark the edge Source-Dest as executable and mark Dest as an
 // executable block.  Moreover, we revisit the phi nodes of Dest.
 void FixpointSSI::markEdgeExecutable(BasicBlock *Source, BasicBlock *Dest) {
-  if (!KnownFeasibleEdges.insert(Edge(Source, Dest)).second)
+  if (!KnownFeasibleEdges.insert(std::make_pair(Source, Dest)).second)
     return;  // This edge is already known to be executable!  
 
   DEBUG(dbgs() << "***Marking Edge Executable: " << Source->getName()
@@ -402,8 +441,12 @@ void FixpointSSI::markEdgeExecutable(BasicBlock *Source, BasicBlock *Dest) {
     // The destination is already executable, but we just made an edge
     // feasible that wasn't before.  Revisit the PHI nodes in the block
     // because they have potentially new operands.
-    for (BasicBlock::iterator I = Dest->begin(); isa<PHINode>(I); ++I)
-      visitPHINode(*cast<PHINode>(I));    
+    for (BasicBlock::iterator I = Dest->begin(), E = Dest->end(); I!=E ; ++I){
+      if (isa<PHINode>(I)){
+	DEBUG(dbgs() << "Triggering the analysis of " << *I << "\n");
+	visitPHINode(*cast<PHINode>(I));    
+      }
+    }
   } 
   else 
     markBlockExecutable(Dest);
@@ -477,7 +520,8 @@ void FixpointSSI::visitInst(Instruction &I) {
 	  AbstractValue * Op1 = Lookup(I.getOperand(0), false);
 	  AbstractValue * Op2 = Lookup(I.getOperand(1), false);
 	  if (Op1 && Op2)
-	    New = AbsV->visitArithBinaryOp(Op1,Op2,I.getOpcode(),I.getOpcodeName());
+	    New = AbsV->visitArithBinaryOp(Op1,Op2,
+					   I.getOpcode(),I.getOpcodeName());
 	  else{
 	    New = AbsV->clone();
 	    New->makeTop();	      
@@ -551,7 +595,8 @@ void FixpointSSI::visitInst(Instruction &I) {
 
 /// Conservative assumptions if the code of the called function will
 /// not be analyzed.
-void FixpointSSI::FunctionWithoutCode(CallInst *CInst, Function * Callee, Instruction *I){
+void FixpointSSI::
+FunctionWithoutCode(CallInst *CInst, Function * Callee, Instruction *I){
   
   // Make top the return value if it's trackable by the analysis
   if (!I->getType()->isVoidTy()) {
@@ -576,7 +621,8 @@ void FixpointSSI::FunctionWithoutCode(CallInst *CInst, Function * Callee, Instru
   if (Callee){
     // Make top all global variables that may be touched by the
     // function (CInst).
-    for (SmallPtrSet<GlobalVariable*, 64>::iterator I = TrackedGlobals.begin(), E = TrackedGlobals.end();
+    for (SmallPtrSet<GlobalVariable*, 64>::iterator 
+	   I = TrackedGlobals.begin(), E = TrackedGlobals.end();
 	 I != E; ++I){    
       GlobalVariable *Gv = *I;
       AliasAnalysis::ModRefResult IsModRef = 
@@ -588,14 +634,16 @@ void FixpointSSI::FunctionWithoutCode(CallInst *CInst, Function * Callee, Instru
 	    TBool * GvFlag = TrackedCondFlags[Gv];    
 	    assert(GvFlag && "ERROR: flag not found in TrackedCondFlags");
 	    GvFlag->makeMaybe();
-	    DEBUG(dbgs() <<"\tGlobal Boolean flag " << Gv->getName() << " may be modified by " 
-		         << Callee->getName() <<".\n");
+	    DEBUG(dbgs() <<"\tGlobal Boolean flag " << Gv->getName() 
+		  << " may be modified by " 
+		  << Callee->getName() <<".\n");
 	  }
 	  else{
 	    AbstractValue * AbsGv = ValueState.lookup(Gv);
 	    assert(AbsGv && "ERROR: entry not found in ValueState");
 	    AbsGv->makeTop();
-	    DEBUG(dbgs() <<"\tGlobal variable " << Gv->getName() << " may be modified by " 
+	    DEBUG(dbgs() <<"\tGlobal variable " << Gv->getName() 
+		  << " may be modified by " 
 		  << Callee->getName() <<".\n");
 	  }
 	}
@@ -633,33 +681,39 @@ void FixpointSSI::addTrackedGlobalVariables(Module *M) {
   /// Keep track only integer scalar global variables whose addresses
   /// have not been taken. In LLVM, if the address has not been taken
   /// then they memory object still has its def-use chains.
-  for (Module::global_iterator Gv = M->global_begin(), E = M->global_end(); Gv != E; ++Gv){ 
+  for (Module::global_iterator 
+	 Gv = M->global_begin(), E = M->global_end(); Gv != E; ++Gv){ 
     if (!Utilities::AddressIsTaken(Gv) && Gv->getType()->isPointerTy() 
 	&& Gv->getType()->getContainedType(0)->isIntegerTy()) {
       DEBUG(printValueInfo(Gv,NULL));
       // Initialize the global variable
       if (Gv->hasInitializer()){
-	if (ConstantInt * GvInitVal  = dyn_cast<ConstantInt>(Gv->getInitializer())){
+	if (ConstantInt * GvInitVal  = 
+	    dyn_cast<ConstantInt>(Gv->getInitializer())){
 	  if (isCondFlag(Gv)){
-	    DEBUG(dbgs() << "\trecording a Boolean flag for global:" << Gv->getName() << "\n");
+	    DEBUG(dbgs() << "\trecording a Boolean flag for global:" 
+		  << Gv->getName() << "\n");
 	    // FIXME: we ignore the initialized value and assume "maybe"
 	      TrackedCondFlags.insert(std::make_pair(&*Gv, new TBool()));
 	  }
 	  else	
-	      ValueState.insert(std::make_pair(&*Gv,initAbsValIntConstant(Gv,GvInitVal)));
+	      ValueState.insert(std::make_pair(&*Gv,
+					       initAbsValIntConstant(Gv,GvInitVal)));
 	}
       }
       else{
 	if (isCondFlag(Gv)){
-	  DEBUG(dbgs() << "\trecording a Boolean flag for global:" << Gv->getName() << "\n");
+	  DEBUG(dbgs() << "\trecording a Boolean flag for global:" 
+		<< Gv->getName() << "\n");
 	  TBool * GvFlag = new TBool();
 	  GvFlag->makeFalse();	      
 	      TrackedCondFlags.insert(std::make_pair(&*Gv,GvFlag));	      
 	}
 	else{
-	  ConstantInt * Zero = cast<ConstantInt>(ConstantInt::
-						 get(Gv->getType()->getContainedType(0),
-						     0, IsAllSigned));
+	  ConstantInt * Zero = 
+	    cast<ConstantInt>(ConstantInt::
+			      get(Gv->getType()->getContainedType(0),
+				  0, IsAllSigned));
 	  ValueState.insert(std::make_pair(&*Gv,initAbsValIntConstant(Gv,Zero)));
 	}
 	}
@@ -1002,6 +1056,7 @@ bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma,
 
       // Here we cannot filter since Op2 is top.
       if (Op2->IsTop()) return false;
+      if (Op2->isBot()) return false;
 
       unsigned pred       = C->getPred();
       DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
@@ -1017,8 +1072,19 @@ bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma,
 
 // Simply assign RHSSigma to LHSSigma.
 void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma){
+  // In programs like 176.gcc we have things like:
+  //  %.01.i = phi i32 [ ptrtoint (double* getelementptr inbounds 
+  //                     (%struct.fooalign* null, i32 0, i32 1) to i32), 
+  //                     %bb3.i ]
+  // Thus, we can raise an exception if RHSSigma is not found.
+
   ResetAbstractValue(LHSSigma);
-  LHSSigma->join(Lookup(RHSSigma,true));
+  //  LHSSigma->join(Lookup(RHSSigma,true));
+
+  if (AbstractValue *AbsVal = Lookup(RHSSigma,false))
+    LHSSigma->join(AbsVal);
+  else
+    LHSSigma->makeTop();
 }
 
 // Execute a sigma node in two steps. The execution consists of
@@ -1043,27 +1109,25 @@ void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma,
 }
 
 
-// Gross since the fixpoint should be generic and should not know
-// anything about the underlying domain.
-
-/// Very special case if the underlying domain is WrappedRange.  The
+/// Special case if the underlying domain is a non-lattice.  The
 /// implementation of visitPHINode assumes that the underlying
 /// abstract domain is associative. That is, join(join(x,y)),z) =
-/// join(x, join(y,z)). However, WrappedRange is not associative. In
-/// that case, we prefer not to join directly all the incoming values
-/// since different orders although sound may give different levels of
-/// precision. Instead, we just collect all incoming values and put
-/// them into a vector which is passed directly to the WrappedRange
-/// domain which knows how to deal with this lack of associativity.
-void FixpointSSI::visitPHINode(WrappedRange * AbsValNew, PHINode &PN){
+/// join(x, join(y,z)). However, non-lattice joins are not
+/// associative. In that case, we prefer not to join directly all the
+/// incoming values since different orders although sound may give
+/// different levels of precision. Instead, we just collect all
+/// incoming values and put them into a vector which is passed
+/// directly to the non-lattice domain which knows how to deal with
+/// this lack of associativity.
+void FixpointSSI::visitPHINode(AbstractValue *&AbsValNew, PHINode &PN){
 
   bool must_be_top=false;
-  std::vector<WrappedRange*> AbsIncVals;
+  std::vector<AbstractValue*> AbsIncVals;
   
   for (unsigned i=0, num_vals=PN.getNumIncomingValues(); i != num_vals;i++) {
     if (isEdgeFeasible(PN.getIncomingBlock(i), PN.getParent()) && 
 	(PN.getIncomingValue(i)->getValueID() != Value::UndefValueVal)){				   
-      WrappedRange * AbsIncVal = dyn_cast<WrappedRange>(Lookup(PN.getIncomingValue(i),false));
+      AbstractValue * AbsIncVal = Lookup(PN.getIncomingValue(i),false);
       if (!AbsIncVal){
 	must_be_top = true;
 	break;
@@ -1125,33 +1189,53 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
 	AbsValNew->makeBot();
 
 	DEBUG(dbgs() << "PHI node " << PN << "\n");
-	// if (WrappedRange * WrappedRangeVal = dyn_cast<WrappedRange>(AbsValNew)){
-	//   visitPHINode(WrappedRangeVal,PN);	  
-	// }
-	for (unsigned i=0, num_vals=PN.getNumIncomingValues(); i != num_vals;i++) {
-	  if (isEdgeFeasible(PN.getIncomingBlock(i), PN.getParent()) && 
-	      (PN.getIncomingValue(i)->getValueID() != Value::UndefValueVal)){				   
-	    /// Merging values:
-	    /// Since join can only lose precision we stop if we
-	    /// already reach top.
-	    if (AbsValNew->IsTop()) 	      
-	      break;
-	    // dbgs()<< "FEASIBLE INCOMING BLOCK " << PN.getIncomingBlock(i)->getName() << "\n";
-	    AbstractValue * AbsIncVal = Lookup(PN.getIncomingValue(i),false);
-	    if (!AbsIncVal){
+
+	// If the abstract domain is not a lattice then we call go
+	// GeneralizedJoin, a special version, for joining multiple
+	// abstract values. If the abstract domain is a lattice we
+	// don't need such a specialized method since we can use the
+	// binary join repeatedly without losing precision. For a
+	// non-lattice domain is not the case (see our SAS'13 paper).
+	if (!(AbsValNew->isLattice()))
+	  visitPHINode(AbsValNew,PN);
+	else{	  
+	  for (unsigned i=0, num_vals=PN.getNumIncomingValues(); i != num_vals;i++) {
+	    // if (!isEdgeFeasible(PN.getIncomingBlock(i), PN.getParent()))
+	    //   dbgs() << PN.getIncomingBlock(i)->getName()
+	    // 	     << " --> " << PN.getParent()->getName()  << " IS UNREACHABLE\n";
+	    // else{
+	    //   dbgs() << PN.getIncomingBlock(i)->getName() 
+	    // 	     << " --> " << PN.getParent()->getName()  << " IS REACHABLE\n";
+	    // }
+	    if (isEdgeFeasible(PN.getIncomingBlock(i), PN.getParent()) && 
+		(PN.getIncomingValue(i)->getValueID() != Value::UndefValueVal)){				   
+	      /// Merging values: since join can only lose precision
+	      /// we stop if we already reach top.
+	      
+	      if (AbsValNew->IsTop()){ 
+		DEBUG(dbgs() << "Skipped " << *(PN.getIncomingValue(i)) 
+		             << " because already top!\n");
+		break;	       
+	      }
+	      AbstractValue * AbsIncVal = Lookup(PN.getIncomingValue(i),false);
+	      DEBUG(dbgs() << "Merging " << *(PN.getIncomingValue(i)) << "\n");
+	      if (!AbsIncVal){
 		AbsValNew->makeTop();
+		DEBUG(dbgs() << "Could not find " << *(PN.getIncomingValue(i)) 
+		             << " in the lookup table. \n");
 		break;
+	      }
+	      else
+		AbsValNew->join(AbsIncVal);
 	    }
-	    else
-	      AbsValNew->join(AbsIncVal);
-	  }
-	} // end for
-	PRINTCALLER("visitPHI");
-	updateState(PN,AbsValNew);
-	DEBUG(dbgs() << "\t[RESULT] ");
-	DEBUG(AbsValNew->print(dbgs()));
-	DEBUG(dbgs() << "\n");        
-      } 
+	  } // end for
+	  PRINTCALLER("visitPHI");
+	  updateState(PN,AbsValNew);
+	  DEBUG(dbgs() << "\t[RESULT] ");
+	  DEBUG(AbsValNew->print(dbgs()));
+	  DEBUG(dbgs() << "\n");        
+	} 
+      }
     }
   }
 }
@@ -1356,7 +1440,7 @@ void comparisonEqInst(TBool &LHS,
   switch (OpCode){
   case ICmpInst::ICMP_EQ:
     if (!meetIsBottom){         // must be true or maybe
-      if(I1->isEqual(I2))
+      if(I1->isGammaSingleton() && I1->isIdentical(I2))
 	LHS.makeTrue();         // must be true
       else
 	LHS.makeMaybe();
@@ -1365,11 +1449,15 @@ void comparisonEqInst(TBool &LHS,
       LHS.makeFalse();  
     break;
   case ICmpInst::ICMP_NE:
-    if (meetIsBottom)
-      LHS.makeMaybe();          // must be true
+    if (meetIsBottom){
+      // LHS.makeMaybe();          // must be true
+      // 13/05/2013: if intersection is empty I1 and I2 are for sure
+      // not equal.
+      LHS.makeTrue() ;
+    }
     else{                       // must be false or maybe
-      if(I1->isEqual(I2))
-	LHS.makeFalse();  
+      if(I1->isGammaSingleton() && I1->isIdentical(I2))
+      	LHS.makeFalse();  
       else
 	LHS.makeMaybe();
     }
@@ -1429,7 +1517,7 @@ void  comparisonUltInst(TBool &LHS, AbstractValue *V1, AbstractValue*V2){
 /// value.
 bool IsMeetEmpty(AbstractValue *V1,AbstractValue* V2){
   if (V1->isConstant() && V2->isConstant())
-    return (!V1->isEqual(V2));
+    return (!V1->isIdentical(V2));
   else{
     if (!V1->isConstant()){
       AbstractValue *Meet = V1->clone();
@@ -1602,7 +1690,7 @@ void FixpointSSI::addTrackedWideningPoints(Function * F){
     // DestBackEdgeBB - Set of destination blocks of backedges
     SmallPtrSet<const BasicBlock*,16> DestBackEdgeBB;
 
-    for (SmallVector<std::pair<const BasicBlock*,const BasicBlock*>, 32>::iterator 
+    for (SmallVector<std::pair<const BasicBlock*,const BasicBlock*>,32>::iterator 
 	   I = BackEdges.begin(),E = BackEdges.end(); I != E; ++I){
       // DEBUG(dbgs() << "backedge from" << I->first->getName() << " to " << 
       // 	  I->second->getName() << "\n");
@@ -1639,76 +1727,6 @@ void FixpointSSI::addTrackedWideningPoints(Function * F){
   }  
 }
 
-//  Special cases: in loops like "while (i < 100)" where i is integer
-//  LLVM translates to "while(i <= 99)". However, we want to consider
-//  "100" as constant for the widening heuristics. Therefore, we add
-//  manually the constant "100".
-ConstantInt * generateConstantPlus1(ConstantInt *C, bool isSigned){
-  APInt VPlus1  = C->getValue() + 1;
-  return C->get(C->getType() , 
-		VPlus1.getSExtValue(), isSigned);
-}
-
-///  Record constants that appear in the program and create their
-///  corresponding abstract values.
-void FixpointSSI::addTrackedIntegerConstants(Function *F){  
-  //////////////////////////////////////////////////////////////////////////////
-  // We also insert the maximum and minimum values for unsigned and
-  // signed versions for common widths (8,16, and 32). This is
-  // important for domains like WrappedRangeLattice in order to avoid
-  // widening to jump too much when the intervals wraparound.
-  //////////////////////////////////////////////////////////////////////////////
-  LLVMContext *ctx = &F->getContext();
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getMinValue(8).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getMinValue(16).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getMinValue(32).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getMaxValue(8).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getMaxValue(16).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getMaxValue(32).getZExtValue(),false));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getSignedMinValue(8).getZExtValue(),true));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getSignedMinValue(16).getZExtValue(),true));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getSignedMinValue(32).getZExtValue(),true));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getSignedMaxValue(8).getZExtValue(),true));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getSignedMaxValue(16).getZExtValue(),true));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getSignedMaxValue(32).getZExtValue(),true));
-  ////////////////////////////////////////////////////////////////////////////////////
-  
-  for (inst_iterator I = inst_begin(F), E=inst_end(F) ; I != E; ++I){
-    for (User::op_iterator i = I->op_begin(), e = I->op_end(); i != e; ++i){
-      if (ConstantInt *C = dyn_cast<ConstantInt>(*i)){
-	unsigned width;
-	if (Utilities::getIntegerWidth(C->getType(),width)){
-	  if (width <= 64){ // Programs like susan has i288 constants!
-	    ValueState.insert(std::make_pair(&*C,initAbsIntConstant(C)));   
-	    ConstSet.insert(C);
-	    ConstSet.insert(generateConstantPlus1(C, IsAllSigned ));
-	  }
-	}
-      }
-      else{	
-	if (Constant *CC = dyn_cast<Constant>(*i)){
-	  if (CC->isNullValue()){ // "null"
-	    // Create an integer constant with value 0 and width 32 bits.
-	    ConstantInt * Zero = cast<ConstantInt>(ConstantInt::get(Type::getInt32Ty(*ctx), 0, IsAllSigned));
-	    ValueState.insert(std::make_pair(&*CC,initAbsIntConstant(Zero)));      
-	  }
-	}
-      }
-    } // end for
-  } // end for
-}
 
 ///////////////////////////////////////////////////////////////////////////
 // Printing utililties
@@ -1764,7 +1782,8 @@ void FixpointSSI::printResultsFunction(Function *F, raw_ostream &Out){
 
   // Iterate over each basic block.
   for (Function::iterator BB = F->begin(), EE = F->end(); BB != EE; ++BB){
-    DenseMap<BasicBlock*, std::set<AbstractValue*> * >::iterator It = BlockMap.find(BB);
+    DenseMap<BasicBlock*, std::set<AbstractValue*> * >::iterator 
+      It = BlockMap.find(BB);
     if (BBExecutable.count(BB) == 0){
       Out << "Block " << BB->getName() << " is unreachable\n";
       continue;
@@ -1776,7 +1795,8 @@ void FixpointSSI::printResultsFunction(Function *F, raw_ostream &Out){
       std::set<AbstractValue*> *Values = It->second;
       Out << "Block " << BB->getName() << " { ";       
       // Print abstract values of the block
-      for(std::set<AbstractValue*>::iterator I_I = Values->begin(), I_E = Values->end(); I_I != I_E ; ++I_I){
+      for(std::set<AbstractValue*>::iterator 
+	    I_I = Values->begin(), I_E = Values->end(); I_I != I_E ; ++I_I){
         AbstractValue *AbsV =  (*I_I);
 	AbsV->print(Out);
 	Out << "; ";
@@ -1802,8 +1822,9 @@ void FixpointSSI::printResults(raw_ostream &Out){
 
 void printValueInfo(Value *v, Function *F){      
   if (Argument *Arg = dyn_cast<Argument>(v))
-    dbgs() << F->getName() << "." << Arg->getParent()->getName() << "." << Arg->getName() 
-	   << " type(" << *Arg->getType() << ")\n";
+    dbgs() << F->getName() << "." << Arg->getParent()->getName() 
+	   << "." << Arg->getName() << " type(" << *Arg->getType() << ")\n";
+	   
   else{
     if (GlobalVariable *Gv = dyn_cast<GlobalVariable>(v)){
       dbgs() << "global." << Gv->getName() 
@@ -1812,8 +1833,10 @@ void printValueInfo(Value *v, Function *F){
     else{
       if (Instruction *Inst = dyn_cast<Instruction>(v)){
 	if (Inst->hasName()){
-	  dbgs() << F->getName() << "." << Inst->getParent()->getName() << "." <<  Inst->getName()
-		   << " type(" << *Inst->getType() << ")\n";
+	  dbgs() << F->getName() << "." << Inst->getParent()->getName() 
+		 << "." <<  Inst->getName() 
+		 << " type(" << *Inst->getType() << ")\n";
+		   
 	}
 	// else{
 	//   dbgs() << Inst->getParent()->getName() << "#anonymous" 
@@ -1822,18 +1845,6 @@ void printValueInfo(Value *v, Function *F){
       }
     }
   }
-}
-
-void printIntConstants(SmallPtrSet<ConstantInt*, 16> JumpSet){
-  dbgs() << "PROGRAM INTEGER CONSTANTS \n";
-  for (SmallPtrSet<ConstantInt*, 16>::iterator I=JumpSet.begin(), 
-	 E=JumpSet.end(); I != E; ++I){    
-    ConstantInt* C = *I;
-    dbgs ()  << "Added constant: " ;
-    C->print(dbgs()); 
-    dbgs() << "\n";
-  }
-  dbgs() << "\n";
 }
 
 void printUsersInst(Value *I,SmallPtrSet<BasicBlock*, 16> BBExecutable,

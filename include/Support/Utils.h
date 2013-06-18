@@ -15,6 +15,11 @@
 #include "llvm/Instructions.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/InstIterator.h"
+
+#include <set>
+
+#define REPRODUCE_APLAS12
 
 using namespace llvm;
 
@@ -106,6 +111,7 @@ namespace unimelb {
       if (F->hasFnAttr(Attribute::AlwaysInline)) return false;
 
       if (!F->mayBeOverridden()){       
+#ifdef REPRODUCE_APLAS12
 	// Since we do not perform inter-procedural analysis and we
 	// always analyze each function assuming worst-case scenario the analysis
 	// of a function is sound even if its address can be taken.
@@ -116,13 +122,98 @@ namespace unimelb {
 	/*   return false; */
 	/* }   */
 	/* else */
+	return (!AddressIsTaken(F));
+#else
 	return true;
+#endif
       }
       else{
 	//DEBUG(dbgs() << "\t" << F->getName() << " may be overriden.\n");
 	dbgs() << "\t" << F->getName() << " may be overriden.\n";
 	return false;
       }
+    }
+
+    
+    static inline int64_t convertConstantIntToint64_t(ConstantInt *C){
+      return C->getValue().getSExtValue();
+    }
+
+    ///  Record constants that appear in the program and create their
+    ///  corresponding abstract values.
+    static void
+    addTrackedIntegerConstants(Function *F, 
+			       bool IsAllSigned, 
+			       ConstantSetTy &ConstSet,
+			       std::vector<std::pair<Value*,ConstantInt*> > &NewAbsVals){
+      //////////////////////////////////////////////////////////////////////////////
+      // We also insert the maximum and minimum values for unsigned and
+      // signed versions for common widths (8,16, and 32). This is
+      // important for domains like WrappedRangeLattice in order to avoid
+      // widening to jump too much when the intervals wraparound.
+      //////////////////////////////////////////////////////////////////////////////
+      LLVMContext *ctx = &F->getContext();
+
+      int64_t umin8  = APInt::getMinValue(8).getZExtValue();
+      int64_t smin8  = APInt::getSignedMinValue(8).getSExtValue();
+      int64_t umax8  = APInt::getMaxValue(8).getZExtValue();
+      int64_t smax8  = APInt::getSignedMaxValue(8).getSExtValue();
+      int64_t umin16 = APInt::getMinValue(16).getZExtValue();
+      int64_t smin16 = APInt::getSignedMinValue(16).getSExtValue();
+      int64_t umax16 = APInt::getMaxValue(16).getZExtValue();
+      int64_t smax16 = APInt::getSignedMaxValue(16).getSExtValue();
+      int64_t umin32 = APInt::getMinValue(32).getZExtValue();
+      int64_t smin32 = APInt::getSignedMinValue(32).getSExtValue();
+      int64_t umax32 = APInt::getMaxValue(32).getZExtValue();
+      int64_t smax32 = APInt::getSignedMaxValue(32).getSExtValue();
+
+      ConstSet.insert(umin8);  ConstSet.insert(umax8); 
+      ConstSet.insert(smin8);  ConstSet.insert(smax8);
+      ConstSet.insert(umin16); ConstSet.insert(umax16);
+      ConstSet.insert(smin16); ConstSet.insert(smax16); 
+      ConstSet.insert(umin32); ConstSet.insert(umax32);
+      ConstSet.insert(smin32); ConstSet.insert(smax32);
+      
+      ////////////////////////////////////////////////////////////////////////////////////
+      
+      for (inst_iterator I = inst_begin(F), E=inst_end(F) ; I != E; ++I){
+	for (User::op_iterator i = I->op_begin(), e = I->op_end(); i != e; ++i){
+	  if (ConstantInt *C = dyn_cast<ConstantInt>(*i)){
+	    unsigned width;
+	    if (Utilities::getIntegerWidth(C->getType(),width)){
+	      if (width <= 64){ // Programs like susan has i288 constants!
+		NewAbsVals.push_back(std::make_pair(&*C,C));
+		ConstSet.insert(convertConstantIntToint64_t(C)-1);
+		ConstSet.insert(convertConstantIntToint64_t(C));
+		ConstSet.insert(convertConstantIntToint64_t(C)+1);
+	      }
+	    }
+	  }
+	  else{	
+	    if (Constant *CC = dyn_cast<Constant>(*i)){
+	      if (CC->isNullValue()){ // "null"
+		// Create an integer constant with value 0 and width 32 bits.
+		ConstantInt * Zero = 
+		  cast<ConstantInt>(ConstantInt::get(Type::getInt32Ty(*ctx), 
+						     0, 
+						     IsAllSigned));
+		NewAbsVals.push_back(std::make_pair(&*CC,Zero));
+	      }
+	    }
+	  }
+	} // end for
+      } // end for
+    }
+
+    // For debugging
+    static void printIntConstants(ConstantSetTy JumpSet){
+      dbgs() << "PROGRAM INTEGER CONSTANTS:{ ";
+      for (ConstantSetTy::iterator 
+	     I=JumpSet.begin(), 
+	     E=JumpSet.end(); I != E; ++I){
+	dbgs () << *I << ";";
+      }
+      dbgs() << "}\n";
     }
 
   };

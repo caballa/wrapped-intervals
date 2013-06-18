@@ -28,6 +28,7 @@ Pass is the pass that we want to run:
       -instcombine               remove redundant instructions.
                                  It can improve precision by removing problematic casting 
                                  instructions among many other things.
+      -only-function fname       Analyze only fname rather than the whole program.            
                                  
   general options:
     -help                          print this message
@@ -64,7 +65,8 @@ fi
 # Compiler from C to llvm bytecode 
 FRONTEND="clang -O0 -m32"
 # llvm opt tool 
-OPT=opt
+# OPT=opt
+OPT=/home/jorge/SvnReps/Systems/llvm/Debug+Asserts/bin/opt
 # The shared libraries that contain my passes
 MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
 
@@ -111,8 +113,13 @@ while [ "$3" != "" ]; do
 	    ;;
 	-debug)
 	    shift
-#	    GENERAL_OPTS="$GENERAL_OPTS -debug-only=RangeAnalysis "
-	    GENERAL_OPTS="$GENERAL_OPTS -debug "
+	    GENERAL_OPTS="$GENERAL_OPTS -debug-only=RangeAnalysis "
+#	    GENERAL_OPTS="$GENERAL_OPTS -debug "
+	    ;;
+	-only-function)
+	    shift
+	    GENERAL_OPTS="$GENERAL_OPTS -only-function=$3"
+	    shift
 	    ;;
 	-time)
 	    shift

@@ -54,7 +54,13 @@ cl::opt<unsigned> Inline("Inline",
 			 cl::init(0),
 			 cl::Hidden,
 			 cl::desc("Enable inlining of functions (default = 0)")); //!< User option to inline functions.
-		     
+
+cl::opt<string> runOnlyFunction("only-function", 
+			      cl::desc("Specify function name"), 
+			      cl::value_desc(""));
+
+// To reproduce numbers closer to APLAS'12 submission
+#define REPRODUCE_APLAS12
 // For range analysis
 #define SIGNED_RANGE_ANALYSIS true
 // For printing more information
@@ -263,19 +269,21 @@ namespace unimelb {
 
   /// Return true if the analysis will consider F.
   bool IsAnalyzable(const Function *F, CallGraph &CG){
-    return (Utilities::IsTrackableFunction(F));
-
-    // The numbers reported in the APLAS paper were obtained by
-    // ignoring functions which were not called by "main".
-    //if (!Utilities::IsTrackableFunction(F)) return false;
-    // if (F->getName() == "main") return true;
-    // if (CallGraphNode * CG_F = CG[F]){
-    //   if (CG_F->getNumReferences() == 1){
-    // 	// The function is either unreachablle, external, or inlined.
-    // 	return false;
-    //   }
-    // }
-    //return true;
+#ifdef REPRODUCE_APLAS12
+      // The numbers reported in the APLAS paper were obtained by
+      // ignoring functions which were not called by "main".
+      if (!Utilities::IsTrackableFunction(F)) return false;
+      if (F->getName() == "main") return true;
+      if (CallGraphNode * CG_F = CG[F]){
+	if (CG_F->getNumReferences() == 1){
+	  // The function is either unreachablle, external, or inlined.
+	  return false;
+	}
+      }
+      return true;
+#else
+      return (Utilities::IsTrackableFunction(F));
+#endif 
   }
 
   /// Common analyses needed by the range analysis.
@@ -294,21 +302,35 @@ namespace unimelb {
 
       AliasAnalysis *AA = &getAnalysis<AliasAnalysis>(); 
       CallGraph     *CG = &getAnalysis<CallGraph>();
-
+      
       dbgs() <<"\n===-------------------------------------------------------------------------===\n" ;  
       dbgs() << "               Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n" ;      
       RangeAnalysis Analysis(&M, widening , narrowing , AA, SIGNED_RANGE_ANALYSIS);
-      for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
-       	if (IsAnalyzable(F,*CG)){
-	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
-	  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	  Analysis.init(F);
-	  Analysis.solve(F);
+      
+      if (runOnlyFunction != ""){
+	Function *F = M.getFunction(runOnlyFunction); 
+	if (!F){ 
+	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+	  return false;
+	}
+	Analysis.init(F);
+	Analysis.solve(F);
 #ifdef  PRINT_RESULTS 	  
-	  //Analysis.printResultsGlobals(dbgs());
-	  Analysis.printResultsFunction(F,dbgs());
+	Analysis.printResultsFunction(F,dbgs());
 #endif  /*PRINT_RESULTS*/
+      }
+      else{
+	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
+	if (IsAnalyzable(F,*CG)){
+	    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
+	    Analysis.init(F);
+	    Analysis.solve(F);
+#ifdef  PRINT_RESULTS 	  
+	    //Analysis.printResultsGlobals(dbgs());
+	    Analysis.printResultsFunction(F,dbgs());
+#endif  /*PRINT_RESULTS*/
+	  }
 	}
       }
       return false;
@@ -333,16 +355,29 @@ namespace unimelb {
       dbgs() << "               Wrapped Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n";      
       WrappedRangeAnalysis Analysis(&M, widening , narrowing , AA);
-      for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
-	if (IsAnalyzable(F,*CG)){
-	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
-	  DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	  Analysis.init(F);
-	  Analysis.solve(F);
+      if (runOnlyFunction != ""){
+	Function *F = M.getFunction(runOnlyFunction); 
+	if (!F){
+	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+	  return false;
+        }
+	Analysis.init(F);
+	Analysis.solve(F);
 #ifdef  PRINT_RESULTS 	  
-	  //Analysis.printResultsGlobals(dbgs());
-	  Analysis.printResultsFunction(F,dbgs());
+	Analysis.printResultsFunction(F,dbgs());
 #endif  /*PRINT_RESULTS*/
+      }
+      else{
+	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
+	  if (IsAnalyzable(F,*CG)){
+	    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
+	    Analysis.init(F);
+	    Analysis.solve(F);
+#ifdef  PRINT_RESULTS 	  
+	    //Analysis.printResultsGlobals(dbgs());
+	    Analysis.printResultsFunction(F,dbgs());
+#endif  /*PRINT_RESULTS*/
+	  }
 	}
       }
       return false;
@@ -386,25 +421,40 @@ namespace unimelb {
       AliasAnalysis *AA = &getAnalysis<AliasAnalysis>(); 
       CallGraph     *CG = &getAnalysis<CallGraph>();
 
-      RangeAnalysis Intervals(&M, widening,narrowing, AA, SIGNED_RANGE_ANALYSIS);
+      RangeAnalysis Intervals(&M, widening, narrowing, AA, SIGNED_RANGE_ANALYSIS);
       WrappedRangeAnalysis WrappedIntervals(&M, widening, narrowing,  AA);
-      for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
-       	if (IsAnalyzable(F,*CG)){
-	  // Function *F = M.getFunction("InitializeFindAttacks"); // for debugging
-	  dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
-	  dbgs() << "----------------   running Range Analysis ... -----------------------\n";
-	  Intervals.init(F);
-	  Intervals.solve(F);
-	  dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
-	  WrappedIntervals.init(F);
-	  WrappedIntervals.solve(F);
-	  // Gather statistics after the analysis of the function.
-	  // After than, each analysis will cleanup *all* their
-	  // datastructures.
-	  compareAnalysesOfFunction(Intervals, WrappedIntervals);
+      if (runOnlyFunction != ""){
+	Function *F = M.getFunction(runOnlyFunction); 
+	if (!F){
+	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+	  return false;
 	}
-      } // end for
-      
+	dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
+	dbgs() << "----------------   running Range Analysis ... -----------------------\n";
+	Intervals.init(F);
+	Intervals.solve(F);
+	dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
+	WrappedIntervals.init(F);
+	WrappedIntervals.solve(F);
+	compareAnalysesOfFunction(Intervals, WrappedIntervals);
+      }
+      else{
+	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
+	  if (IsAnalyzable(F,*CG)){
+	    dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
+	    dbgs() << "----------------   running Range Analysis ... -----------------------\n";
+	    Intervals.init(F);
+	    Intervals.solve(F);
+	    dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
+	    WrappedIntervals.init(F);
+	    WrappedIntervals.solve(F);
+	    // Gather statistics after the analysis of the function.
+	    // After than, each analysis will cleanup *all* their
+	    // datastructures.
+	    compareAnalysesOfFunction(Intervals, WrappedIntervals);
+	  }
+	} // end for
+      }
       printStats(dbgs());     
       return false;
     }
@@ -523,8 +573,8 @@ namespace unimelb {
       }
 
 
-      if ( (I2->WrappedlessOrEqual(NewI1,false))){
-	if (NewI1->WrappedlessOrEqual(I2,false))
+      if ( (I2->lessOrEqual(NewI1))){
+	if (NewI1->lessOrEqual(I2))
 	  NumOfSame++;
 	else{
 #ifdef MORE_COMPARISON_DETAILS
@@ -538,7 +588,7 @@ namespace unimelb {
 	}
       }
       else{
-	if (NewI1->WrappedlessOrEqual(I2,false)){
+	if (NewI1->lessOrEqual(I2)){
 #ifdef MORE_COMPARISON_DETAILS
 	  dbgs() << "Interval won: ";
 	  NewI1->print(dbgs());
