@@ -18,8 +18,8 @@
 STATISTIC(DominanceQueries    , "Number of dominance queries");
 STATISTIC(DominanceCacheHits  , "Number of dominance cache hits");
 
-STATISTIC(TotalAbsVal         , "Total number of tracked abstract values");
-STATISTIC(NonTrivialAbsVal    , "Total number of non-top tracked abstract values");
+//STATISTIC(TotalAbsVal         , "Total number of tracked abstract values");
+//STATISTIC(NonTrivialAbsVal    , "Total number of non-top tracked abstract values");
 
 using namespace std;
 using namespace llvm;
@@ -231,16 +231,17 @@ namespace unimelb {
 
     /// Gather some quick stats
     void stats() const {
-     const SmallPtrSet<Value*,32> Vars = DefinedAndUsedVariables(B);
-      for(SmallPtrSet<Value*,32>::iterator I = Vars.begin(), E = Vars.end(); I != E; ++I){
-	if (isa<GlobalVariable>(*I) || isa<ConstantInt>(*I))
-	  continue;   
-	if (const AbstractValue * V = getValMap()[*I]){
-	  TotalAbsVal++;
-	  if (V->countForStats())
-	    NonTrivialAbsVal++;
-	}
-      }
+     // const SmallPtrSet<Value*,32> Vars = DefinedAndUsedVariables(B);
+     //  for(SmallPtrSet<Value*,32>::iterator I = Vars.begin(), E = Vars.end(); I != E; ++I){
+     // 	if (isa<GlobalVariable>(*I) || isa<ConstantInt>(*I))
+     // 	  continue;   
+     // 	if (const AbstractValue * V = getValMap()[*I]){
+     // 	  TotalAbsVal++;
+     //// countForStats() is not longer a method from AbstractValue
+     // 	  if (V->countForStats())
+     // 	    NonTrivialAbsVal++;
+     // 	}
+     //  }
     }
 
     /// Update the map.
@@ -278,10 +279,9 @@ namespace unimelb {
 	  Users[V] = S;
 	}
 	else{
-	  filter_users * S  = new filter_users();
 	  S->insert(User);
 	  // Users.insert(std::make_pair(V,S)); // this does not work
-	  Users[V] = S;
+	  Users[V] = new filter_users();
 	}
       }      
     }

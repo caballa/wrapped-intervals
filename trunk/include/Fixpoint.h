@@ -41,6 +41,8 @@
 /// conditional branch that can be used in a successor block to refine
 /// the abstract value of the variables used in the constraint. In the
 /// above example, we have two filters "x>=5" and "x<5".
+/// 
+/// \fixme: modifications to handle non-lattice abstract domains.
 //////////////////////////////////////////////////////////////////////////////
 
 #define DEBUG_TYPE "RangeAnalysis"
@@ -129,9 +131,10 @@ namespace unimelb {
     /// Constructors of the class
     Fixpoint(Module *M, unsigned WidenL, unsigned NarrowL, AliasAnalysis* AA);
     /// If isSigned is true then all integers will be considered as signed.
-    Fixpoint(Module *M, unsigned WidenL, unsigned NarrowL, AliasAnalysis* AA, bool isSigned);
+    Fixpoint(Module *M, unsigned WidenL, unsigned NarrowL, AliasAnalysis* AA, 
+	     bool isSigned);
     /// Destructor of the class
-    ~Fixpoint();
+    virtual ~Fixpoint();
 
     /// Methods for support type inquiry through isa, cast, and dyn_cast.
     static inline bool classof(const Fixpoint *) { return true; }
@@ -190,7 +193,8 @@ namespace unimelb {
     void generateFilters(BasicBlock *, BasicBlock *);
     void evalFilter(AbstractValue *&, const FiltersTy, const MapValToAbstractTy);
 
-    void updateState(Instruction &, MapValToAbstractTy &, AbstractValue* Old, AbstractValue* New);
+    void updateState(Instruction &, MapValToAbstractTy &, 
+		     AbstractValue* Old, AbstractValue* New);
     void updateCondFlag(Instruction &, TBool *);
 
     void notifyUser(Value *, BasicBlock *, AbstractBlock *, Instruction* User);
@@ -317,7 +321,7 @@ namespace unimelb {
     unsigned WideningLimit; 
     /// Set of integer constants that appear in the program. Used by
     /// jump-set widening.
-    SmallPtrSet<ConstantInt*, 16> ConstSet; 
+    ConstantSetTy ConstSet; 
     /// Map a constant to its abstract value.
     DenseMap<Value*, AbstractValue*> ConstValMap;
     /// If NarrowingLimit zero then narrowing is not applied.
@@ -349,12 +353,13 @@ namespace unimelb {
     // Timer*T6; Timer*T7;
     
     /// Lookup of V in all of the tracked maps.
-    AbstractValue* Lookup(MapValToAbstractTy ValMap, Value *V, bool ExceptionIfNotFound){
+    AbstractValue* 
+    Lookup(MapValToAbstractTy ValMap, Value *V, bool ExceptionIfNotFound){
       AbstractValue* AbsVal=NULL;
       if (V->getValueID() != Value::UndefValueVal){
 	if (TrackedGlobals.count(dyn_cast<GlobalVariable>(V)))
 	  AbsVal = GlobalValMap.lookup(V);
-	else if (ConstSet.count(dyn_cast<ConstantInt>(V)))
+	else if (ConstSet.count((dyn_cast<ConstantInt>(V))->getValue().getSExtValue()))
 	  AbsVal = ConstValMap.lookup(V);
 	else
 	  AbsVal = ValMap.lookup(V);
@@ -367,7 +372,8 @@ namespace unimelb {
     AbstractBlock* FindMap(Value *V){
       Instruction *I = dyn_cast<Instruction>(V);
       assert(I);
-      DenseMap<BasicBlock*, AbstractBlock*>::iterator It = BasicBlockToAbstractBlock.find(I->getParent());
+      DenseMap<BasicBlock*, AbstractBlock*>::iterator 
+	It = BasicBlockToAbstractBlock.find(I->getParent());
       assert(It != BasicBlockToAbstractBlock.end());      
       return It->second;		   
     }

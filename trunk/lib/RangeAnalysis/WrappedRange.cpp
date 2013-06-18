@@ -6,17 +6,7 @@
 /// \file  WrappedRange.cpp
 ///        Wrapped Interval Abstract Domain.
 ///
-/// Many methods have a flag IsSigned. This may be confusing since the
-/// analysis is intended to be sign-agnostic. The flag is set in these
-/// two cases:
-///
-/// \li the operation depends on the sign (e.g., comparisons,
-///     division, etc).
-///
-/// \li the operation does not depend on the sign but after we cut at
-///     the poles we can then make assumptions about the signs.
-///
-/// \todo There are many memory leaks: need to fix.
+/// \todo There are still memory leaks: need to fix.
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "BaseRange.h"
@@ -31,11 +21,18 @@ using namespace unimelb;
 //#define DEBUG_FILTER_SIGMA
 //#define DEBUG_EVALUATE_GUARD
 //#define DEBUG_WIDENING
+//#define DEBUG_REFINE_WITH_JUMPS
 //#define DEBUG_MEET
 //#define DEBUG_JOIN
-//#define DEBUG_REFINE_WITH_JUMPS
 //#define DEBUG_OVERFLOW_CHECKS
 //#define DEBUG_GENERALIZED_JOIN
+//#define DEBUG_MEMBER
+//#define DEBUG_MULT
+//#define DEBUG_DIVISION
+//#define DEBUG_CAST
+//#define DEBUG_TRUNCATE
+//#define DEBUG_SHIFTS
+//#define DEBUG_LOGICALBIT
 
 STATISTIC(NumOfOverflows     ,"Number of overflows");
 
@@ -53,6 +50,53 @@ void printComparisonOp(unsigned Pred,raw_ostream &Out){
   case ICmpInst::ICMP_SGE: Out << " >=_s " ;  break;
   default: ;
   }
+}
+
+inline bool IsMSBOne(APInt x){
+  // This tests the high bit of the APInt to determine if it is set.
+  return (x.isNegative());
+}
+
+inline bool IsMSBZero(APInt x){
+  return (!IsMSBOne(x));
+}
+
+/// Return true if x is lexicographically smaller than y.
+inline bool Lex_LessThan(const APInt &x, const APInt &y){
+  if (IsMSBOne(x)  && IsMSBZero(y)) return false;
+  if (IsMSBZero(x) && IsMSBOne(y))  return true;
+  if (IsMSBOne(x)  && IsMSBOne(y))  return x.slt(y);
+  if (IsMSBZero(x) && IsMSBZero(y)) return x.ult(y);
+  assert(false && "This should not happen");
+}
+
+/// Return true if x is lexicographically smaller or equal than y.
+inline bool Lex_LessOrEqual(const APInt &x, const APInt &y){
+  if (IsMSBOne(x) && IsMSBZero(y))  return false;
+  if (IsMSBZero(x) && IsMSBOne(y))  return true;
+  if (IsMSBOne(x) && IsMSBOne(y))   return x.sle(y);
+  if (IsMSBZero(x) && IsMSBZero(y)) return x.ule(y);
+  assert(false && "This should not happen");
+}
+
+/// Lexicographical maximum
+inline  APInt Lex_max(const APInt &x, const APInt &y){
+  return (Lex_LessOrEqual(x,y)? y : x);
+}
+
+/// Lexicographical minimum
+inline  APInt Lex_min(const APInt &x, const APInt &y){
+  return (Lex_LessOrEqual(x,y)? x : y);
+}
+
+// Return true if the cardinality of the set obtained by applying the
+// gamma function (in the sense of Galois connections) is 1
+bool WrappedRange::isGammaSingleton() const {
+  if (isBot() || IsTop()) return false;
+  APInt lb  = getLB();
+  APInt ub  = getUB();
+  APInt card  = WrappedRange::WCard(lb,ub);
+  return (card == 1);
 }
 
 bool WrappedRange::isBot() const { 
@@ -73,26 +117,33 @@ void WrappedRange::makeTop(){
   __isBottom=false;
 }
 
+bool WrappedRange::isIdentical(AbstractValue* V){
+  return (BaseRange::isIdentical(V));
+}
+
 bool WrappedRange::isEqual(AbstractValue* V){
-  // FIXME: identical test is not enough to claim two wrapped ranges
-  // are equal. For instance, top have multiple representations
-  // [2,1],[1,0], etc. FixpointSSI does not rely on this operation for
-  // any vital activity.
-  return (BaseRange::isEqual(V));
+  WrappedRange *S = this;
+  WrappedRange *T = cast<WrappedRange>(V);    
+  // This is correct since we have a poset and the anti-symmetric
+  // property holds.
+  return (S->lessOrEqual(T) && T->lessOrEqual(S));
 }
 
 inline bool IsRangeTooBig(APInt lb, APInt ub){
   APInt card  = WrappedRange::WCard(lb,ub);
-  // If card does not fit into uint64_t then APInt raises an exception.
+  // If card does not fit into uint64_t then APInt raises an
+  // exception.
   uint64_t n     =  card.getZExtValue();
-  // If width of lb and ub are different then APInt raises an exception.
+  // If width of lb and ub are different then APInt raises an
+  // exception.
   unsigned width = lb.getBitWidth();
-  // If 2^w -1 does not fit into uint64_t then APInt raises an exception.
-  uint64_t Max = (APInt::getMaxValue(width)).getZExtValue();
+  // If 2^w does not fit into uint64_t then APInt raises an exception.
+  uint64_t Max = (APInt::getMaxValue(width)).getZExtValue() + 1;
   return (n >= Max);
 }
 
-void WrappedRange::convertWidenBoundsToWrappedRange(APInt lb, APInt ub){
+inline void WrappedRange::
+convertWidenBoundsToWrappedRange(APInt lb, APInt ub){
   if (IsRangeTooBig(lb,ub))
     makeTop();
   else{
@@ -101,182 +152,280 @@ void WrappedRange::convertWidenBoundsToWrappedRange(APInt lb, APInt ub){
   }
 }
 
-void RefinedWithJumpSet(APInt a, APInt b, 
-			const SmallPtrSet<ConstantInt*, 16>  JumpSet,
-			APInt &lb, APInt &ub){
+/// Choose the greatest of the constants that is smaller than lb and
+/// the smallest of the constants that it is bigger than ub.
+void widenOneInterval(APInt a, APInt b, unsigned int width,		      
+		      const ConstantSetTy &JumpSet,
+		      APInt &lb, APInt &ub){
 
-#ifdef DEBUG_REFINE_WITH_JUMPS
-  dbgs() << "Before refinement: \n";
-  dbgs() << "LB: " << lb << " UB:" << ub << "\n";
-#endif
-  // If lb or ub have different widths then APInt raises an exception
-  unsigned width = lb.getBitWidth();
-  for (SmallPtrSet<ConstantInt*, 16>::iterator I=JumpSet.begin(), 
-	 E=JumpSet.end(); I != E; ++I){    
-    ConstantInt* C = *I;
-    // We can have constants with different bit widths
-    if (width == C->getBitWidth()){
-      APInt X = C->getValue();      
-      if (a.uge(X)) 
-	lb = BaseRange::umax(lb,X);
-      if (b.ule(X)) {
-	ub = BaseRange::umin(ub,X);
+  // Initial values 
+  lb= APInt::getSignedMinValue(width);
+  ub= APInt::getSignedMaxValue(width);
+
+  bool first_lb=true;
+  bool first_ub=true;
+  for (ConstantSetTy::iterator 
+	 I=JumpSet.begin(), 
+	 E=JumpSet.end(); I != E; ++I){ 
+
+    APInt LandMark(width, *I);
+    if (Lex_LessOrEqual(LandMark,a)){
+      if (first_lb){
+	lb = LandMark; 
+	first_lb=false;
       }
+      else 
+	lb =  BaseRange::umax(lb,LandMark);// Lex_max(lb,LandMark); 
+    }
+    if (Lex_LessOrEqual(b,LandMark)){
+      if (first_ub) {
+	ub = LandMark; 
+	first_ub=false;
+      }
+      else
+	ub = BaseRange::umin(ub,LandMark);// Lex_min(lb,LandMark);
     }
   }
-#ifdef DEBUG_REFINE_WITH_JUMPS
-  dbgs() << "after refinement: \n";
-  dbgs() << "LB: " << lb << " UB:" << ub << "\n";
-#endif
+  
+#ifdef DEBUG_WIDENING
+  dbgs() << "Widen interval based on landmarks: " 
+	 << "[" << lb << "," << ub << "]\n";
+#endif 
 }
 
 bool checkOverflowForWideningJump(APInt Card){
   // If a or b do not fit into uint64_t or they do not have same width
   // then APInt raises an exception
   uint64_t value = Card.getZExtValue();
-  // Max is 2^w/2
-  uint64_t Max = (APInt::getMaxValue(Card.getBitWidth() - 1)).getZExtValue();
+  // Max is 2^{w-1}
+  uint64_t Max = (APInt::getSignedMaxValue(Card.getBitWidth() - 1)).getZExtValue();
+    
+#ifdef DEBUG_WIDENING
+  dbgs() << "\n\tchecking if the widening jump overflows: " 
+	 << value << ">?" << Max << "\n";
+#endif
   return (value >= Max);
 }
 
+inline WrappedRange 
+mkSmallerInterval(APInt x, APInt y, unsigned width){
+  WrappedRange R1(x, x, width);    
+  WrappedRange R2(y, y, width);    
+  R1.join(&R2);
+  return R1;
+}
 
-void WrappedRange::widening(AbstractValue *PreviousV, const SmallPtrSet<ConstantInt*, 16> JumpSet){
-	 
-  // Make sure that we don't change PreviousV although maybe it's
-  // unnecessary
+/// After trivial cases, we check in what direction we are growing and
+/// doubling the size of one the intervals. We also use the constants
+/// of the program to make guesses.
+void WrappedRange::widening(AbstractValue *PreviousV, 
+			    const ConstantSetTy &JumpSet){
+
+  if (PreviousV->isBot()) return;
+  // rest of trivial cases are handled by the caller (e.g., if any of
+  // the two abstract values is top).
+
   WrappedRange *Old = cast<WrappedRange>(PreviousV->clone());  
   WrappedRange *New = this;
 
-  // this should not happen but just in case
-  if (New->lessOrEqual(Old)) return;
+  // if (New->lessOrEqual(Old)) return;
 
   APInt u = Old->getLB();
   APInt v = Old->getUB();
   APInt x = New->getLB();
   APInt y = New->getUB();
 
-  DEBUG(dbgs() << "\tWIDENING(" );
-  DEBUG(Old->printRange(dbgs()));
-  DEBUG(dbgs() << "," );
-  DEBUG(printRange(dbgs()));
-  DEBUG(dbgs() << ")=" );
+  DEBUG(dbgs() << "\t" << getValue()->getName()  
+	       <<  " WIDENING("  << *Old << "," << *this << ")=");
+	    
+  // dbgs() << "\t" << getValue()->getName() 
+  //        << " WIDENING(" << *Old << "," << *this << ")= \n");
+
+  //bool canDoublingInterval=true;
+  APInt cardOld  = WCard(u,v);
+  // Overflow check   
+  if (checkOverflowForWideningJump(cardOld)){
+    //canDoublingInterval=false;
+    New->makeTop();
+#ifdef DEBUG_WIDENING
+    dbgs() << "### \n";
+#endif
+    DEBUG(dbgs() <<  *New << "\n");
+    // dbgs() << "\t" << *New << "\n";
+    return;
+  }
 
 #ifdef DEBUG_WIDENING
-  dbgs() << Old->getValue()->getName() << " ### ";
-  dbgs() << "\tWIDENING(" ;
-  Old->printRange(dbgs());
-  dbgs() << "," ;
-  printRange(dbgs());
-  dbgs() << ")=" ;
+  dbgs() <<  "\n ### \n";
+  dbgs() << "Size of [" << u << "," << v << "]: " << cardOld.toString(10,false) << "\n";
 #endif 
-
   WrappedRange Merged(*Old);
   Merged.join(New);  
-  if (Old->lessOrEqual(New) &&  
-      (!Old->WrappedMember(x, __SIGNED) && !Old->WrappedMember(y, __SIGNED))) {
-#ifdef DEBUG_WIDENING
-      dbgs() << "Old value is strictly contained in new value\n";
-#endif 
-      APInt widen_lb = x;
-      APInt cardOld  = WCard(u,v);
-      // Overflow check   
-      if (checkOverflowForWideningJump(cardOld)){	
-	// NumOfOverflows++;
-	New->makeTop();
-	goto END;	
-      }
-      APInt widen_ub = umax(x + cardOld + cardOld, y);
-      RefinedWithJumpSet(x, y, JumpSet, widen_lb, widen_ub);
-      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-      goto END;
-    }
-  
-  // The next two cases we just check in what direction we are growing
-  // and doubling the size of one the intervals.
-
 #ifdef DEBUG_WIDENING
   dbgs() << "Upper bound of old and new value: ";
   Merged.printRange(dbgs());
   dbgs() << "\n";
 #endif 
-  // We are increasing
-  if ( (Merged.getLB() == u) && (Merged.getUB() == y)){
-#ifdef DEBUG_WIDENING
-    dbgs() << "Widening: the new value is increasing.\n";
-#endif 
-    APInt cardOld  = WCard(u,v);
-    APInt widen_lb = u;
-    // Overflow check   
-    if (checkOverflowForWideningJump(cardOld)){
-      //NumOfOverflows++;
-      New->makeTop();
-      goto END;	
-    }
-    APInt widen_ub = umax(u + cardOld + cardOld, y);
-#ifdef DEBUG_WIDENING
-    dbgs() << "Size of [" << u << "," << v << "]: " << cardOld << "\n";
-    dbgs() << "Maximum between " << (u + cardOld + cardOld) << " and " << y << "=" << widen_ub <<"\n";
-    dbgs() << "Widen LB: " << widen_lb << "\n";
-    dbgs() << "(unsigned) Widen UB: " << widen_ub << "\n";
-    dbgs() << "(signed) Widen UB: " << smax(u + cardOld + cardOld, y) << "\n";
-#endif 
-    RefinedWithJumpSet(x, y, JumpSet, widen_lb, widen_ub);
-#ifdef DEBUG_WIDENING
-    dbgs() << "After refinment (if any) \n";
-    dbgs() << "Widen LB: " << widen_lb << "\n";
-    dbgs() << "Widen UB: " << widen_ub << "\n";
-#endif 
-    New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-    goto END;
-  }
 
-  // We are decreasing
-  if ( (Merged.getLB() == x) && (Merged.getUB() == v)){
-    APInt cardOld  = WCard(u,v);
-    // Overflow check   
-    if (checkOverflowForWideningJump(cardOld)){
-      //NumOfOverflows++;
-      New->makeTop();
-      goto END;	
-    }
-    APInt widen_lb = umin(u - cardOld - cardOld, x);
-    APInt widen_ub = v;
+  unsigned int width = x.getBitWidth();
+  if ( Old->lessOrEqual(New) &&  
+      (!Old->WrappedMember(x) && !Old->WrappedMember(y))) {
 #ifdef DEBUG_WIDENING
-    dbgs() << "Widening: the new value is decreasing.\n";
-    dbgs() << "Size of [" << u << "," << v << "]: " << cardOld << "\n";
-    dbgs() << "Minimum between " << (u - cardOld - cardOld) << " and " << x << "=" << widen_lb << "\n";
-    dbgs() << "Widen LB: " << widen_lb << "\n";
-    dbgs() << "Widen UB: " << widen_ub << "\n";
+    dbgs() << "Neither of the two extremes stabilize.\n";
 #endif 
-    RefinedWithJumpSet(x, y, JumpSet, widen_lb, widen_ub);
+//     if (!canDoublingInterval){
+//       APInt widen_lb; APInt widen_ub;
+//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+// 		       JumpSet, widen_lb, widen_ub);
+//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+//       WrappedRange tmp(x,y,width); 
+//       New->join(&tmp);
+// #ifdef DEBUG_WIDENING
+//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+//       dbgs() << "Widen LB= " << widen_lb << "\n";
+//       dbgs() << "Widen UB= " << widen_ub << "\n";
+// #endif 
+//     }
+//     else{
+      APInt widen_lb = x;
+      APInt widen_ub = x + cardOld + cardOld; 
 #ifdef DEBUG_WIDENING
-    dbgs() << "After refinment (if any) \n";
-    dbgs() << "Widen LB: " << widen_lb << "\n";
-    dbgs() << "Widen UB: " << widen_ub << "\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
 #endif 
-    New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-    goto END;
+      APInt jump_lb; APInt jump_ub;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+	               JumpSet, jump_lb, jump_ub);
+      {
+	WrappedRange tmp = 
+	  mkSmallerInterval(Merged.getLB(), widen_lb, width);
+	if (tmp.WrappedMember(jump_lb)) 
+	  widen_lb = jump_lb;
+      }
+      {
+	WrappedRange tmp = 
+	  mkSmallerInterval(Merged.getUB(), widen_ub, width);
+	if (tmp.WrappedMember(jump_ub)) 
+	  widen_ub = jump_ub;
+      }
+      // RefinedWithJumpSet(x, y, JumpSet, widen_lb, widen_ub);
+#ifdef DEBUG_WIDENING
+      dbgs() << "After refinement with landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(x,y,width); 
+      New->join(&tmp);
+      // }
   }
- 
-  // Otherwise, return old interval
-  New->setLB(Old->getLB());
-  New->setUB(Old->getUB());
-
- END: 
+  else if ( (Merged.getLB() == u) && (Merged.getUB() == y)){
+#ifdef DEBUG_WIDENING
+    dbgs() << "The upper bound does not stabilize but the lower bound does.\n";
+#endif 
+//     if (!canDoublingInterval){
+//       APInt widen_lb = u; APInt widen_lb__;
+//       APInt widen_ub;
+//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+// 	               JumpSet, widen_lb__, widen_ub);
+//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+//       WrappedRange tmp(x,y,width); 
+//       New->join(&tmp);
+// #ifdef DEBUG_WIDENING
+//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+//       dbgs() << "Widen LB= " << widen_lb << "\n";
+//       dbgs() << "Widen UB= " << widen_ub << "\n";
+// #endif 
+//     }
+//     else{
+      APInt widen_lb = u;
+      APInt widen_ub = u + cardOld + cardOld; 
+#ifdef DEBUG_WIDENING
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+      APInt jump_lb__; APInt jump_ub;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+		       JumpSet, jump_lb__, jump_ub);
+      {
+	WrappedRange tmp = mkSmallerInterval(Merged.getUB(), widen_ub, width);
+	if (tmp.WrappedMember(jump_ub)) 
+	  widen_ub = jump_ub;
+      }
+#ifdef DEBUG_WIDENING
+      dbgs() << "After refinement with landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(u,y,width); 
+      New->join(&tmp);
+      //    }
+  }
+  else if ( (Merged.getLB() == x) && (Merged.getUB() == v)){
+#ifdef DEBUG_WIDENING
+    dbgs() << "The lower bound does not stabilize but the upper bound does.\n";
+#endif
+//     if (!canDoublingInterval){
+//       APInt widen_lb; 
+//       APInt widen_ub = v; APInt widen_ub__;
+//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+// 		       JumpSet, widen_lb, widen_ub__);
+//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+//       WrappedRange tmp(x,y,width); 
+//       New->join(&tmp);
+// #ifdef DEBUG_WIDENING
+//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+//       dbgs() << "Widen LB= " << widen_lb << "\n";
+//       dbgs() << "Widen UB= " << widen_ub << "\n";
+// #endif 
+//     }
+//     else{
+      APInt widen_lb = u - cardOld - cardOld; 
+      APInt widen_ub = v;
+#ifdef DEBUG_WIDENING
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif
+      APInt jump_lb; APInt jump_ub__;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+	               JumpSet, jump_lb, jump_ub__);
+      {
+	WrappedRange tmp = mkSmallerInterval(Merged.getLB(), widen_lb, width);
+	if (tmp.WrappedMember(jump_lb)) 
+	widen_lb = jump_lb;
+      }
+#ifdef DEBUG_WIDENING
+      dbgs() << "After refinement with landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(x,v,width);
+      New->join(&tmp);
+      //    }
+  }
+  else{
+    //assert(false && "Unsupported case");
+    // Otherwise, return old interval
+    // Watch out here: it should be top!
+    New->setLB(Old->getLB());
+    New->setUB(Old->getUB());
+  }
+  
   New->normalizeTop();
-  DEBUG(printRange(dbgs()));
-  DEBUG(dbgs() << "\n");
 
 #ifdef DEBUG_WIDENING
-  printRange(dbgs());
-  dbgs() << "\n";
+  dbgs() << "### \n";
 #endif
 
+  DEBUG(dbgs()  <<"\t" << getValue()->getName()  << "=" << *this << "\n");
+  //dbgs()<< "\t" << *this << "\n";
   return;
 }
 
 /// Return true if x \in [a,b]. 
-bool WrappedRange::WrappedMember(APInt e, bool IsSigned){
+bool WrappedRange::WrappedMember(APInt e) const{
   if (isBot()) return false;
   if (IsTop()) return true;
 
@@ -287,26 +436,21 @@ bool WrappedRange::WrappedMember(APInt e, bool IsSigned){
   // paper. e \in [x,y] iff e <=_{x} y (starting from x we encounter e
   // before than y going clockwise) iff e - x <= y - x
 
-  // dbgs()<< "MEMBERSHIP " << e.toString(10,false) << " in " ;
-  // print(dbgs());
-  // dbgs() << "\n" << (e - x).ule(y - x) << "\n";
-  // dbgs() << ( (x.ule(y) && x.ule(e) && e.ule(y)) ||
-  //  	      (x.ugt(y) && (e.ule(x) || y.ule(e)))) << "\n";
-  // return (e - x).ule(y - x);
+#ifdef DEBUG_MEMBER
+  dbgs()<< "MEMBERSHIP " << e.toString(10,false) << " in " ;
+  print(dbgs());
+  dbgs() << "\n";
+  dbgs() <<   Lex_LessOrEqual(e - x, y - x) << "\n";
+  dbgs() << ( (x.ule(y) && x.ule(e) && e.ule(y)) ||
+   	      (x.ugt(y) && (e.ule(x) || y.ule(e)))) << "\n";
+#endif /*DEBUG_MEMBER*/
 
-
-  if (IsSigned){
-    return ( (x.sle(y) && x.sle(e) && e.sle(y)) ||
-  	     (x.sgt(y) && (e.sle(x) || y.sle(e))));
-  }
-  else{
-    return ( (x.ule(y) && x.ule(e) && e.ule(y)) ||
-    	     (x.ugt(y) && (e.ule(x) || y.ule(e))));
-  }
-
+  return Lex_LessOrEqual(e - x, y - x);
 }
 
-bool WrappedRange::WrappedlessOrEqual(AbstractValue * V, bool IsSigned){ 
+/// Return true if this is less or equal than V based on the poset
+/// ordering.
+bool WrappedRange::WrappedlessOrEqual(AbstractValue * V){ 
   
   WrappedRange *S = this;
   WrappedRange *T = cast<WrappedRange>(V);  
@@ -332,14 +476,15 @@ bool WrappedRange::WrappedlessOrEqual(AbstractValue * V, bool IsSigned){
   APInt c = T->getLB();
   APInt d = T->getUB();
   
-  return ( T->WrappedMember(a, IsSigned) && 
-	   T->WrappedMember(b, IsSigned) &&
-	   (S->isEqual(T) || !(S->WrappedMember(c,IsSigned)) || !(S->WrappedMember(d,IsSigned))));	   	    
+  return ( T->WrappedMember(a) && 
+	   T->WrappedMember(b) &&
+	   (S->isIdentical(T) || 
+	    !(S->WrappedMember(c)) || !(S->WrappedMember(d))));	   	    
 }
 
 
 bool WrappedRange::lessOrEqual(AbstractValue * V){ 
-  return WrappedlessOrEqual(V, __SIGNED);
+  return WrappedlessOrEqual(V);
 }
 
 void WrappedRange::print(raw_ostream &Out) const{
@@ -352,33 +497,36 @@ void WrappedRange::join(AbstractValue *V){
   // to cut at the south pole
   WrappedRange * R = cast<WrappedRange>(V);
 
-  if (R->isBot()) return;
+  if (R->isBot()) 
+    return;
+
   if (isBot()){
     WrappedRangeAssign(R); 
     return;
   }
 
-  std::vector<WrappedRange*> s1 = 
+  std::vector<WrappedRangePtr> s1 = 
     WrappedRange::ssplit(R->getLB(), R->getUB(), R->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
+  std::vector<WrappedRangePtr> s2 = 
     WrappedRange::ssplit(getLB(), getUB(), getLB().getBitWidth());
 
-  for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
+    for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
       // FIXME: use GeneralizedJoin to get more precise results.
-      this->WrappedJoin2((*I1), (*I2));
+      this->Binary_WrappedJoin((*I1).get(), (*I2).get());
     }
   }
   normalizeTop();
 }
 
 // Just a wrapper.
-void WrappedRange::WrappedJoin2(WrappedRange *R1, WrappedRange *R2){
-  WrappedJoin(R1, __SIGNED);
-  WrappedJoin(R2, __SIGNED);
+void WrappedRange::Binary_WrappedJoin(WrappedRange *R1, WrappedRange *R2){
+  WrappedJoin(R1);
+  WrappedJoin(R2);
 }
 
-void WrappedRange::WrappedJoin(AbstractValue *V, bool IsSigned){
+void WrappedRange::WrappedJoin(AbstractValue *V){
 
   WrappedRange *S = this;
   WrappedRange *T = cast<WrappedRange>(V);
@@ -395,128 +543,82 @@ void WrappedRange::WrappedJoin(AbstractValue *V, bool IsSigned){
   dbgs() << ")=" ;
 #endif /*DEBUG_JOIN*/
   // Containment cases (also cover bottom and top cases)
-  if (T->WrappedlessOrEqual(S,IsSigned)) {
+  if (T->WrappedlessOrEqual(S)) {
 #ifdef DEBUG_JOIN
     dbgs() << "containment case\n";
 #endif 
-    goto END;
   }
-  if (S->WrappedlessOrEqual(T,IsSigned)) {
+  else if (S->WrappedlessOrEqual(T)) {
 #ifdef DEBUG_JOIN
     dbgs() << "containment case\n";
 #endif 
     WrappedRangeAssign(T);
-    goto END;
   }
   // Extra case for top: one cover the other
-  if (T->WrappedMember(a,IsSigned) && T->WrappedMember(b,IsSigned) &&
-      S->WrappedMember(c,IsSigned) && S->WrappedMember(d,IsSigned)){
+  else if (T->WrappedMember(a) && T->WrappedMember(b) &&
+      S->WrappedMember(c) && S->WrappedMember(d)){
 #ifdef DEBUG_JOIN
     dbgs() << "one cover the other case\n";
 #endif 
     makeTop();
-    goto END;
   }
   // Overlapping cases
-  if (S->WrappedMember(c,IsSigned)){
+  else if (S->WrappedMember(c)){
 #ifdef DEBUG_JOIN
     dbgs() << "overlapping case\n";
 #endif 
     setLB(a);
     setUB(d);
-    goto END;
   }
-  if (T->WrappedMember(a,IsSigned)){
+  else if (T->WrappedMember(a)){
 #ifdef DEBUG_JOIN
     dbgs() << "overlapping case\n";
 #endif 
     setLB(c);
     setUB(b);
-    goto END;
   }
   // Left/Right Leaning cases: non-deterministic cases
-
-  // Note: since WCard returns cardinalities we can use unsigned
-  // comparison here.  
-  if (WCard(b,c).ule(WCard(d,a))){
+  // Here we use lexicographical order to resolve ties
+  // if ( Lex_LessThan(WCard(b,c), WCard(d,a))){ 
+  else if ( Lex_LessOrEqual(WCard(b,c), WCard(d,a)) ||
+       (WCard(b,c) == WCard(d,a) &&  Lex_LessOrEqual(a,c))){
 #ifdef DEBUG_JOIN
-    dbgs() << "non-overlapping case\n";
+    dbgs() << "\nnon-overlapping case (left)\n";
+    dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false) 
+	   << " Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
 #endif 
     setLB(a);
     setUB(d);
-    goto END;
   }
   else{
 #ifdef DEBUG_JOIN
-    dbgs() << "non-overlapping case\n";
+    dbgs() << "\nnon-overlapping case (right)\n";
+    dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false)  
+	   << " Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
 #endif 
     setLB(c);
     setUB(b);
-    goto END;
   }
- END:
-  normalizeTop();
 
+  normalizeTop();
   // This is gross but we need to record that this is not bottom
   // anymore.
   if (!S->isBot() || !T->isBot())
     resetBottomFlag();
-
 #ifdef DEBUG_JOIN
   printRange(dbgs()) ; 
   dbgs() << "\n" ;
 #endif 
-
 }
 
-
-// void test_GeneralizedJoin(){
-//   {
-//     APInt a(8,  2,false);  APInt b(8, 10,false);
-//     APInt c(8,120,false);  APInt d(8,130,false);
-//     APInt e(8,132,false);  APInt f(8,135,false);
-//     APInt zero(8,0,false); 
-//     // Temporary constructors
-//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
-//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
-//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
-//     std::vector<WrappedRange*> vv;
-//     vv.push_back(R3); vv.push_back(R2); vv.push_back(R1);
-//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
-//     Res->GeneralizedJoin(vv);
-//     // it should be [2,135]
-//     dbgs()<< "Result for test 1: " ;
-//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
-//   }
-
-//   {
-//     APInt a(8,  2,false);  APInt b(8, 10,false);
-//     APInt c(8,120,false);  APInt d(8,130,false);
-//     APInt e(8,132,false);  APInt f(8,135,false);
-//     APInt g(8,200,false);  APInt h(8,100,false);
-
-//     APInt zero(8,0,false); 
-//     // Temporary constructors
-//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
-//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
-//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
-//     WrappedRange * R4 = new WrappedRange(g,h,g.getBitWidth());
-//     std::vector<WrappedRange*> vv;
-//     vv.push_back(R3); vv.push_back(R4); vv.push_back(R2); vv.push_back(R1);
-//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
-//     Res->GeneralizedJoin(vv);
-//     // it should be [2,135]
-//     dbgs()<< "Result for test 2: " ;
-//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
-//   }
-// }
+// Begin  machinery for generalized join
 
 bool SortWrappedRanges_Compare(WrappedRange *R1, WrappedRange *R2){
   assert(R1);
   assert(R2);
   APInt a = R1->getLB();
   APInt c = R2->getLB();
-  return a.ule(c);
+  return Lex_LessOrEqual(a,c); // a.ule(c);
 }
 
 /// Sort a vector of wrapped ranges in order of lexicographical
@@ -530,9 +632,7 @@ void SortWrappedRanges(std::vector<WrappedRange *> & Rs){
   }
   dbgs() << "\n";
 #endif 
-  
   std::sort(Rs.begin(), Rs.end() , SortWrappedRanges_Compare);
-  
 #ifdef DEBUG_GENERALIZED_JOIN
   dbgs() << "after sorted: \n";
   for(std::vector<WrappedRange*>::iterator I=Rs.begin(), E=Rs.end() ; I!=E; ++I){
@@ -543,161 +643,172 @@ void SortWrappedRanges(std::vector<WrappedRange *> & Rs){
 #endif 
 }
 
-void Extend(WrappedRange * &R1, WrappedRange *R2){  
-  R1->join(R2);
+// Wrapper for join
+WrappedRange Extend(const WrappedRange &R1, const  WrappedRange &R2){  
+  WrappedRange Res(R1);
+  WrappedRange tmp(R2);
+  Res.join(&tmp);
+  return Res;
 }
 
 /// Return the biggest of the two wrapped intervals.
-WrappedRange * Bigger(WrappedRange *R1, WrappedRange *R2){
+WrappedRange Bigger(const WrappedRange &R1, const WrappedRange &R2){
 
-  if (R1->isBot() && !R2->isBot())
-    return new WrappedRange(*R2);
-  if (R2->isBot() && !R1->isBot())
-    return new WrappedRange(*R1);
-  if (R2->isBot() && R1->isBot())
-    return new WrappedRange(*R1);
+  if (R1.isBot() && !R2.isBot())
+    return WrappedRange(R2);
+  if (R2.isBot() && !R1.isBot())
+    return WrappedRange(R1);
+  if (R2.isBot() && R1.isBot())
+    return WrappedRange(R1);
 
-  APInt a = R1->getLB();
-  APInt b = R1->getUB();
-  APInt c = R2->getLB();
-  APInt d = R2->getUB();
-  if (WrappedRange::WCard(a,b).uge(WrappedRange::WCard(c,d)))
-    return new WrappedRange(*R1);
+  APInt a = R1.getLB();
+  APInt b = R1.getUB();
+  APInt c = R2.getLB();
+  APInt d = R2.getUB();
+  //  if (WrappedRange::WCard(a,b).uge(WrappedRange::WCard(c,d)))
+  if (Lex_LessOrEqual(WrappedRange::WCard(c,d),WrappedRange::WCard(a,b)))
+    return WrappedRange(R1);
   else 
-    return new WrappedRange(*R2);
+    return WrappedRange(R2);
 }
 
 /// If R1 and R2 overlap then return bottom. Otherwise, return the
 /// clockwise distance from the end of the first to the start of the
 /// second.
-WrappedRange * ClockWiseGap(WrappedRange *R1, WrappedRange *R2){
-  APInt a = R1->getLB();
-  APInt b = R1->getUB();
-  APInt c = R2->getLB();
-  APInt d = R2->getUB();
-  // Temporary constructor!
-  WrappedRange * gap = new WrappedRange(b+1,c-1,a.getBitWidth());
+WrappedRange ClockWiseGap(const WrappedRange &R1, const WrappedRange &R2){
+  APInt a = R1.getLB();
+  APInt b = R1.getUB();
+  APInt c = R2.getLB();
+  APInt d = R2.getUB();
 
-  if ( R1->isBot() || R2->isBot() || 
-       R2->WrappedMember(b,false) || R1->WrappedMember(c,false)){
-    gap->makeBot();
-  }
+  WrappedRange gap(b+1,c-1,a.getBitWidth());
+  if (R1.isBot() || R2.isBot() || R2.WrappedMember(b) || R1.WrappedMember(c))
+    gap.makeBot();
   
   return gap;
 }
 
-/// Return true if starting from 0....0 (South Pole) we encounter y
-/// before than x.
-bool CrossSouthPole(const APInt x,  const APInt y)  {
-  return y.ule(x);
-}
-
-/// Return true if starting from 2^{w-1} (North Pole) we encounter y
-/// before than x.
-bool CrossNorthPole(const APInt x,  const APInt y)  {
-  APInt max = APInt::getSignedMaxValue(x.getBitWidth());
-  // if ((y-max).slt(x-max))
-  //   dbgs() << "[" << x.toString(10,false) << "," << y.toString(10,false) << "] is crossing NP.\n";
-  return (y-max).slt(x-max);
-}
-
 /// Return the complement of a wrapped interval.
-WrappedRange* WrappedComplement(WrappedRange *R){
-  WrappedRange * C = new WrappedRange(*R);
+WrappedRange WrappedComplement(const WrappedRange &R){
+  WrappedRange C(R);
 
-  if (R->isBot()){
-    C->makeTop();
+  if (R.isBot()){
+    C.makeTop();
     return C;
   }
-  if (R->IsTop()){
-    C->makeBot();
+  if (R.IsTop()){
+    C.makeBot();
     return C;
   }
   
-  APInt x = C->getLB();
-  APInt y = C->getUB();
-  C->setLB(y+1);
-  C->setUB(x-1);
+  APInt x = C.getLB();
+  APInt y = C.getUB();
+  C.setLB(y+1);
+  C.setUB(x-1);
   return C;
+}
+
+
+/// Return true if starting from 0....0 (South Pole) we encounter y
+/// before than x. This coincides with unsigned less or equal.
+inline bool CrossSouthPole(const APInt x,  const APInt y)  {
+  return y.ult(x);
+}
+
+/// Return true if starting from 2^{w-1} (North Pole) we encounter y
+/// before than x. This coincides with signed less or equal.
+inline bool CrossNorthPole(const APInt x,  const APInt y)  {
+  return (y.slt(x));
+}
+
+
+inline WrappedRange * convertAbsValToWrapped(AbstractValue *V){
+  return cast<WrappedRange>(V);
 }
 
 /// Algorithm Fig 3 from the paper. Finding the pseudo least upper
 /// bound of a set of wrapped ranges and assign it to this.
-void WrappedRange::GeneralizedJoin(std::vector<WrappedRange *> Rs){
-  if (Rs.size() < 2) return;
+void WrappedRange::
+GeneralizedJoin(std::vector<AbstractValue *> Values){
+
+  if (Values.size() < 2) return;
+
+  std::vector<WrappedRange*> Rs;
+  std::transform(Values.begin(), Values.end(), 
+		 std::back_inserter(Rs), 
+		 convertAbsValToWrapped);
 
   SortWrappedRanges(Rs);  
 
-  WrappedRange *f = new WrappedRange(*this);
-  f->makeBot();
+  WrappedRange f(*this);
+  f.makeBot();
 
   for(std::vector<WrappedRange*>::iterator I=Rs.begin(), E=Rs.end() ; I!=E; ++I){
-    WrappedRange *R = *I;
-    if (R->IsTop() || CrossSouthPole(R->getLB(), R->getUB())){      
+    WrappedRange R(*(*I));
+    if (R.IsTop() || CrossSouthPole(R.getLB(), R.getUB())){      
 #ifdef DEBUG_GENERALIZED_JOIN
-      R->printRange(dbgs());
+      R.printRange(dbgs());
       dbgs() << " crosses the south pole!\n";
       dbgs() << "extend("; 
-      f->printRange(dbgs());
+      f.printRange(dbgs());
       dbgs() << ",";
-      R->printRange(dbgs());
+      R.printRange(dbgs());
       dbgs() << ")=";
 #endif 
-      Extend(f, R);
+      f = Extend(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
-      f->printRange(dbgs());
+      f.printRange(dbgs());
       dbgs() << "\n";
 #endif 
     }
   }
 
-  WrappedRange *g = new WrappedRange(*this);
-  g->makeBot();
+  WrappedRange g(*this);
+  g.makeBot();
   for(std::vector<WrappedRange*>::iterator I=Rs.begin(), E=Rs.end() ; I!=E; ++I){
-    WrappedRange *R = *I;
-    WrappedRange *tmp = ClockWiseGap(f, R);
+    WrappedRange R(*(*I));
+    WrappedRange tmp = ClockWiseGap(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
     dbgs() << "gap(";
-    f->printRange(dbgs());
+    f.printRange(dbgs());
     dbgs() << ",";
-    R->printRange(dbgs());
+    R.printRange(dbgs());
     dbgs() << " = ";
-    tmp->printRange(dbgs());
+    tmp.printRange(dbgs());
     dbgs() << ")\n";
 
     dbgs() << "Bigger(";
-    g->printRange(dbgs());
+    g.printRange(dbgs());
     dbgs() << ",";
-    tmp->printRange(dbgs());
+    tmp.printRange(dbgs());
     dbgs() << ") = ";
 #endif 
     g = Bigger(g,tmp);
 #ifdef DEBUG_GENERALIZED_JOIN
-    g->printRange(dbgs());
+    g.printRange(dbgs());
     dbgs() << "\n";
     dbgs() << "Extend(";
-    f->printRange(dbgs());
+    f.printRange(dbgs());
     dbgs() << ",";
-    R->printRange(dbgs());
+    R.printRange(dbgs());
     dbgs() << ") = ";
 #endif 
     Extend(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
-      f->printRange(dbgs());
+    f.printRange(dbgs());
     dbgs() << "\n";
 #endif 
   }  
-  WrappedComplement(f)->print(dbgs());
+  WrappedRange Tmp = WrappedComplement(Bigger(g,WrappedComplement(f)));
+#ifdef DEBUG_GENERALIZED_JOIN
+  Tmp.print(dbgs());
   dbgs()<< "\n";
-  Bigger(g,WrappedComplement(f))->print(dbgs());
-  dbgs()<< "\n";
-  WrappedRange *Tmp = WrappedComplement(Bigger(g,WrappedComplement(f)));
-  Tmp->print(dbgs());
-  dbgs()<< "\n";
-  this->setLB(Tmp->getLB());
-  this->setUB(Tmp->getUB());
+#endif 
+  this->setLB(Tmp.getLB());
+  this->setUB(Tmp.getUB());
 }
 
+// End  Machinery for generalized join
 
 void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
 			
@@ -709,111 +820,100 @@ void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
   WrappedRange * R2 = cast<WrappedRange>(V2);
 
   this->makeBot();
-  WrappedRange * tmp = new WrappedRange(*this);
-
   // **SOUTH POLE SPLIT** 
-  std::vector<WrappedRange*> s1 = 
+  std::vector<WrappedRangePtr> s1 = 
     WrappedRange::ssplit(R1->getLB(), R1->getUB(), R1->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
+  std::vector<WrappedRangePtr> s2 = 
     WrappedRange::ssplit(R2->getLB(), R2->getUB(), R2->getLB().getBitWidth());
-  for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
+
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
+    for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
       // Note that we need to meet each pair of segments and then join
       // the result of all of them.
-      tmp->WrappedMeet((*I1),(*I2), __SIGNED);
-      this->WrappedJoin(tmp, __SIGNED);
+      WrappedRange tmp = WrappedMeet((*I1).get(),(*I2).get());
+      this->WrappedJoin(&tmp);
     }
   }
-  delete tmp;
 }
 
 
-void WrappedRange::WrappedMeet(AbstractValue *V1,AbstractValue *V2, bool IsSigned){
-  /// 
-  //// TEMPORARY
-  // test_GeneralizedJoin();
-  ////
-
-  // This is gross but we need to turn off the bottom flag. Of course,
-  // if the meet returns bottom then the bottom flag will turn on
-  // again.
-  this->resetBottomFlag();
-
-  assert(!isConstant() && 
-	 "The meet method can be only called by a non-constant value");
-  WrappedRange *S = cast<WrappedRange>(V1);
-  WrappedRange *T = cast<WrappedRange>(V2);
+WrappedRange unimelb::
+WrappedMeet(WrappedRange *S, WrappedRange *T){
 
   APInt a = S->getLB();
   APInt b = S->getUB();
   APInt c = T->getLB();
   APInt d = T->getUB();
 
+  APInt lb; APInt ub;
+  unsigned int width = a.getBitWidth();
+
   // Containment cases (also cover bottom and top cases)
-  if (S->WrappedlessOrEqual(T,IsSigned)) {
+  if (S->WrappedlessOrEqual(T)) {
 #ifdef DEBUG_MEET
     dbgs() << "Containment case 1\n";
 #endif
-    WrappedRangeAssign(S);
-    goto END;
+    lb = S->getLB();
+    ub = S->getUB();
   }
-  if (T->WrappedlessOrEqual(S,IsSigned)) {
+  else if (T->WrappedlessOrEqual(S)) {
 #ifdef DEBUG_MEET
     dbgs() << "Containment case 2\n";
 #endif
-    WrappedRangeAssign(T);
-    goto END;
+    lb = T->getLB();
+    ub = T->getUB();
   }
   // If one cover the other the meet is not convex.  We return the one
   //  with smallest cardinality
-  if (T->WrappedMember(a,IsSigned) && T->WrappedMember(b,IsSigned) &&
-      S->WrappedMember(c,IsSigned) && S->WrappedMember(d,IsSigned)){
+  else if (T->WrappedMember(a) && T->WrappedMember(b) &&
+	   S->WrappedMember(c) && S->WrappedMember(d)){
 #ifdef DEBUG_MEET
     dbgs() << "One cover the other\n";
 #endif
-    if (WCard(a,b).ule(WCard(c,b))){
-      WrappedRangeAssign(S);
-      goto END;
+    //   if (Lex_LessOrEqual(WCard(a,b), WCard(c,b))){
+    if ( Lex_LessThan(WrappedRange::WCard(a,b), 
+		      WrappedRange::WCard(c,d)) || 
+	 ( WrappedRange::WCard(a,b) == WrappedRange::WCard(c,d) && 
+	   Lex_LessOrEqual(a,c))){
+      lb = S->getLB();
+      ub = S->getUB();
     }
     else{
-      WrappedRangeAssign(T);
-      goto END;
+      lb = T->getLB();
+      ub = T->getUB();
     }
   }
   // Overlapping cases
-  if (S->WrappedMember(c,IsSigned)){
+  else if (S->WrappedMember(c)){
 #ifdef DEBUG_MEET
     dbgs() << "Overlapping 1\n";
 #endif
-    setLB(c);
-    setUB(b);
-    goto END;
+    lb = c;
+    ub = b;
   }
-  if (T->WrappedMember(a,IsSigned)){
+  else if (T->WrappedMember(a)){
 #ifdef DEBUG_MEET
     dbgs() << "Overlapping 2\n";
 #endif
-    setLB(a);
-    setUB(d);
-    goto END;
+    lb = a;
+    ub = d;
   }
+  else{
 #ifdef DEBUG_MEET
     dbgs() << "Disjoint case\n";
 #endif
-  // Otherwise, bottom
-  makeBot();
-
- END:
-  normalizeTop();
-  /*
-    DEBUG(dbgs() << "\t" );
-    DEBUG(S->printRange(dbgs())) ; 
-    DEBUG(dbgs() << " meet " );
-    DEBUG(T->printRange(dbgs())) ; 
-    DEBUG(dbgs() << " --> " );
-    DEBUG(print(dbgs()));
-    DEBUG(dbgs() << "\n");    
-  */
+    // Otherwise, bottom
+    // a and b to put something initilized.
+    WrappedRange Meet(a,b,width);   
+    Meet.makeBot();
+    return Meet;
+  }
+  
+  WrappedRange Meet(lb,ub,width);   
+  Meet.normalizeTop();
+  return Meet;
+  
 }
 
 // Comparison operations: these methods are used to tell if the
@@ -882,22 +982,26 @@ bool comparisonSignedLessThan(WrappedRange *I1,WrappedRange *I2, bool IsStrict){
 #endif /*DEBUG_EVALUATE_GUARD*/
   // **NORTH POLE SPLIT** and do normal test for all possible
   // pairs. If one is true then return true.
-  std::vector<WrappedRange*> s1 = 
-    WrappedRange::nsplit(I1->getLB(), I1->getUB(), I1->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
-    WrappedRange::nsplit(I2->getLB(), I2->getUB(), I2->getLB().getBitWidth());
+  std::vector<WrappedRangePtr> s1 = 
+    WrappedRange::nsplit(I1->getLB(), I1->getUB(), 
+			 I1->getLB().getBitWidth());
+  std::vector<WrappedRangePtr> s2 = 
+    WrappedRange::nsplit(I2->getLB(), I2->getUB(), 
+			 I2->getLB().getBitWidth());
   bool tmp=false;
-  for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
+    for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
       if (IsStrict)
-	tmp |= comparisonSlt_SameHemisphere((*I1), (*I2));
+	tmp |= comparisonSlt_SameHemisphere((*I1).get(), (*I2).get());
       else
-	tmp |= comparisonSle_SameHemisphere((*I1), (*I2));
+	tmp |= comparisonSle_SameHemisphere((*I1).get(), (*I2).get());
       if (tmp) {
 #ifdef DEBUG_EVALUATE_GUARD
 	dbgs() <<": true\n";
 #endif /*DEBUG_EVALUATE_GUARD*/
-	return true; // we dont' bother check all of them if one is already true
+	// we dont' bother check all of them if one is already true
+	return true; 
       }
     }    
   }
@@ -908,34 +1012,37 @@ bool comparisonSignedLessThan(WrappedRange *I1,WrappedRange *I2, bool IsStrict){
   return tmp;
 }
 
-bool comparisonUnsignedLessThan(WrappedRange *I1, WrappedRange *I2, bool IsStrict){
+ bool comparisonUnsignedLessThan(WrappedRange *I1, WrappedRange *I2, 
+				 bool IsStrict){
   // If IsStrict=true then <= else <
 #ifdef DEBUG_EVALUATE_GUARD
-  dbgs() << "\t"; 
-  I1->printRange(dbgs());
+  dbgs() << "\t" << *I1 ; 
   if (IsStrict) dbgs() << " <_u "; else dbgs() << " <=_u ";
-  I2->printRange(dbgs());
-  dbgs() << "\n";
+  dbgs() << *I2 << "\n";
 #endif /*DEBUG_EVALUATE_GUARD*/
   // **SOUTH POLE SPLIT** and do normal test for all possible
   // pairs. If one is true then return true.
-  std::vector<WrappedRange*> s1 = 
-    WrappedRange::ssplit(I1->getLB(), I1->getUB(), I1->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
-    WrappedRange::ssplit(I2->getLB(), I2->getUB(), I2->getLB().getBitWidth());
+  std::vector<WrappedRangePtr> s1 = 
+    WrappedRange::ssplit(I1->getLB(), I1->getUB(), 
+			 I1->getLB().getBitWidth());
+  std::vector<WrappedRangePtr> s2 = 
+    WrappedRange::ssplit(I2->getLB(), I2->getUB(), 
+			 I2->getLB().getBitWidth());
 
   bool tmp=false;
-  for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
+    for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
       if (IsStrict)
-	tmp |= comparisonUlt_SameHemisphere((*I1), (*I2));
+	tmp |= comparisonUlt_SameHemisphere((*I1).get(), (*I2).get());
       else
-	tmp |= comparisonUle_SameHemisphere((*I1), (*I2));
+	tmp |= comparisonUle_SameHemisphere((*I1).get(), (*I2).get());
       if (tmp){
 #ifdef DEBUG_EVALUATE_GUARD
 	dbgs() <<": true\n";
 #endif /*DEBUG_EVALUATE_GUARD*/
-	return true; // we dont' bother check all of them if one is already true
+	// we dont' bother check all of them if one is already true
+	return true; 
       }
     }    
   }
@@ -974,25 +1081,31 @@ bool WrappedRange::comparisonUlt(AbstractValue *V){
 // Filter methods: they can refine an interval by using information
 // from other variables that appear in the guards.
 
-std::vector<std::pair<WrappedRange*,WrappedRange*> > 
-keepOnlyFeasibleRanges(unsigned Pred, WrappedRange *V1, WrappedRange *V2){
+std::vector<std::pair<WrappedRangePtr,WrappedRangePtr> > 
+keepOnlyFeasibleRanges(unsigned Pred, 
+		       WrappedRange *V1, WrappedRange *V2){
 
-  std::vector<std::pair<WrappedRange*,WrappedRange*> > res;
-  std::vector<WrappedRange*> s1,s2;
+  std::vector<std::pair<WrappedRangePtr,WrappedRangePtr> > res;
+  std::vector<WrappedRangePtr> s1,s2;
 
   if (BaseRange::IsSignedCompInst(Pred)){
     // **NORTH POLE SPLIT**
-    s1 = WrappedRange::nsplit(V1->getLB(), V1->getUB(), V1->getLB().getBitWidth());
-    s2 = WrappedRange::nsplit(V2->getLB(), V2->getUB(), V2->getLB().getBitWidth());
+    s1 = WrappedRange::nsplit(V1->getLB(), V1->getUB(), 
+			      V1->getLB().getBitWidth());
+    s2 = WrappedRange::nsplit(V2->getLB(), V2->getUB(), 
+			      V2->getLB().getBitWidth());
   }
   else{
     // **SOUTH POLE SPLIT**
-    s1 = WrappedRange::ssplit(V1->getLB(), V1->getUB(), V1->getLB().getBitWidth());
-    s2 = WrappedRange::ssplit(V2->getLB(), V2->getUB(), V2->getLB().getBitWidth());
+    s1 = WrappedRange::ssplit(V1->getLB(), V1->getUB(), 
+			      V1->getLB().getBitWidth());
+    s2 = WrappedRange::ssplit(V2->getLB(), V2->getUB(), 
+			      V2->getLB().getBitWidth());
   }
       
-  for (std::vector<WrappedRange*>::iterator I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
+    for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){
       switch(Pred){
       case ICmpInst::ICMP_EQ:
       case ICmpInst::ICMP_NE:
@@ -1000,36 +1113,36 @@ keepOnlyFeasibleRanges(unsigned Pred, WrappedRange *V1, WrappedRange *V2){
 	res.push_back(std::make_pair((*I1), (*I2)));
         break;
       case ICmpInst::ICMP_SLE:
-	if (comparisonSignedLessThan((*I1), (*I2), false))
+	if (comparisonSignedLessThan((*I1).get(), (*I2).get(), false))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_SLT:
-	if (comparisonSignedLessThan((*I1), (*I2), true))
+	if (comparisonSignedLessThan((*I1).get(), (*I2).get(), true))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_ULE:
-	if (comparisonUnsignedLessThan((*I1), (*I2), false))
+	if (comparisonUnsignedLessThan((*I1).get(), (*I2).get(), false))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_ULT:
-	if (comparisonUnsignedLessThan((*I1), (*I2), true))
+	if (comparisonUnsignedLessThan((*I1).get(), (*I2).get(), true))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;	  
 	/////
       case ICmpInst::ICMP_SGT:
-	if (comparisonSignedLessThan((*I2), (*I1), true))
+	if (comparisonSignedLessThan((*I2).get(), (*I1).get(), true))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_SGE:
-	if (comparisonSignedLessThan((*I2), (*I1), false))
+	if (comparisonSignedLessThan((*I2).get(), (*I1).get(), false))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_UGT:
-	if (comparisonUnsignedLessThan((*I2), (*I1), true))
+	if (comparisonUnsignedLessThan((*I2).get(), (*I1).get(), true))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
       case ICmpInst::ICMP_UGE:
-	if (comparisonUnsignedLessThan((*I2), (*I1), false))
+	if (comparisonUnsignedLessThan((*I2).get(), (*I1).get(), false))
 	  res.push_back(std::make_pair((*I1), (*I2)));
 	break;
 
@@ -1043,10 +1156,12 @@ keepOnlyFeasibleRanges(unsigned Pred, WrappedRange *V1, WrappedRange *V2){
 /// V1 is the range we would like to improve using information from
 /// Pred and V2. Therefore, in case we cannot improve we must return
 /// V1.
-void WrappedRange::filterSigma(unsigned Pred, AbstractValue *V1, AbstractValue *V2){
+void WrappedRange::
+filterSigma(unsigned Pred, AbstractValue *V1, AbstractValue *V2){
+
   WrappedRange *Var1   = cast<WrappedRange>(V1);
   WrappedRange *Var2   = cast<WrappedRange>(V2);
-  WrappedRange *Tmp    = new WrappedRange(*this);
+  WrappedRange Tmp(*this);
 
 #ifdef DEBUG_FILTER_SIGMA
   dbgs() << "Before splitting at north/south poles: " ;
@@ -1055,86 +1170,77 @@ void WrappedRange::filterSigma(unsigned Pred, AbstractValue *V1, AbstractValue *
   Var2->printRange(dbgs()); 
   dbgs() << "\n";      
 #endif /*DEBUG_FILTER_SIGMA*/
-  
-  std::vector<std::pair<WrappedRange*,WrappedRange*> > s =
-    keepOnlyFeasibleRanges(Pred,Var1,Var2);
-
+  typedef std::pair<WrappedRangePtr,WrappedRangePtr> WrappedPtrPair; 
+  std::vector<WrappedPtrPair> s = keepOnlyFeasibleRanges(Pred,Var1,Var2);
   // During narrowing (this) has a value from the fixpoint computation
   // which we want to (hopefully) improve. This is why we make this bottom. 
   this->makeBot();
 
-  for (std::vector<std::pair<WrappedRange*,WrappedRange*> >::iterator 
-	 I=s.begin(), E=s.end(); I!=E; ++I){
+  for (std::vector<WrappedPtrPair>::iterator 
+	 I = s.begin(), E = s.end(); I!=E; ++I){
+    WrappedRange * WI1 = I->first.get();
+    WrappedRange * WI2 = I->second.get();
 #ifdef DEBUG_FILTER_SIGMA
-    dbgs() << "After split: \n" ;
-#endif /*DEBUG_FILTER_SIGMA*/
-    WrappedRange * WI1 = I->first;
-    WrappedRange * WI2 = I->second;
-#ifdef DEBUG_FILTER_SIGMA
-    dbgs() << "\tfiltering pair: (" ;
+    dbgs() << "\tAfter cutting the original intervals: "
+           << " (" ;
     WI1->printRange(dbgs()); 
     printComparisonOp(Pred,dbgs());
     WI2->printRange(dbgs()); 
     dbgs() << ")\n";      
 #endif /*DEBUG_FILTER_SIGMA*/
-    // Note that we have only three cases since I1 is the default
+    // Note that we have only two cases since I1 is the default
     // value for the sigma node unless it can be improved using I2.
     //
-    // Then, if I1 is a constant interval we just return since the
-    // interval cannot be further improved.  Otherwise, we have two
-    // specialized methods if I2 is also a constant interval or not.
-    if (WI1->IsConstantRange()){
-      Tmp->WrappedRangeAssign(WI1);
+    // We have two specialized methods if I2 is also a constant
+    // interval or not.
+    if (WI2->IsConstantRange()){
+      Tmp.filterSigma_VarAndConst(Pred, WI1, WI2);
 #ifdef DEBUG_FILTER_SIGMA
-      dbgs() << "\tNo need of filtering because the interval was already a constant): ";
-      Tmp->printRange(dbgs());
+      dbgs() << "\tCase 1: variable and constant.\n";
+      dbgs() << "\tREFINED INTERVAL: ";
+      Tmp.printRange(dbgs());
       dbgs() << "\n";
 #endif /*DEBUG_FILTER_SIGMA*/
-      this->WrappedJoin(Tmp,BaseRange::IsSignedCompInst(Pred));      
+      this->WrappedJoin(&Tmp);
     }
-    else{    
-      if (WI2->IsConstantRange()){
-	Tmp->filterSigma_VarAndConst(Pred, WI1, WI2);
+    else{
+      Tmp.filterSigma_TwoVars(Pred, WI1, WI2);
 #ifdef DEBUG_FILTER_SIGMA
-	dbgs() << "\tAfter filtering: ";
-	Tmp->printRange(dbgs());
-	dbgs() << "\n";
+      dbgs() << "\tCase 2: two variables.\n";
+      dbgs() << "\tREFINED INTERVAL: ";
+      Tmp.printRange(dbgs());
+      dbgs() << "\n";
 #endif /*DEBUG_FILTER_SIGMA*/
-	this->WrappedJoin(Tmp,BaseRange::IsSignedCompInst(Pred));
-      }
-      else{
-	Tmp->filterSigma_TwoVars(Pred, WI1, WI2);
-#ifdef DEBUG_FILTER_SIGMA
-	dbgs() << "\tAfter filtering: ";
-	Tmp->printRange(dbgs());
-	dbgs() << "\n";
-#endif /*DEBUG_FILTER_SIGMA*/
-	this->WrappedJoin(Tmp,BaseRange::IsSignedCompInst(Pred));
-      }
+      this->WrappedJoin(&Tmp);
     }
-  } //end for
-  this->normalizeTop();    
+  } //end for  
 
-  delete Tmp;
+  // IMPORTANT: if after cutting intervals at poles, refine them (if
+  // possible) and join finally them the result is bottom then it
+  // means that could not improve so we should assign Var1 to this
+  if (this->isBot())
+    this->WrappedRangeAssign(Var1);
+  
+  this->normalizeTop();    
   return;
 }
 
-// FIXME: The code of filterSigma_VarAndConst and filterSigma_TwoVars
-// is almost identical to the one in Range. The main difference is in
-// the call to meet. We need to factorize code.
 
 /// Special case when one is variable and the other a constant in the
 /// branch condition.
-void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, WrappedRange *N){
-  // Assumption: Var is the range we would like to improve using   
-  // information from Pred and Const                               
+/// Pre: V is not top because it has been split before at the poles
+void WrappedRange::
+filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, WrappedRange *N){
+  // Assumption: V is the range we would like to improve using   
+  // information from Pred and N
   WrappedRange *LHS = this;
   // This is also gross but we need to turn off the bottom flag. Of
   // course, if the meet operation returns bottom then the
   // bottom flag will turn on again.
   LHS->resetBottomFlag();
 
-  assert(!V->IsConstantRange() && N->IsConstantRange());
+  // V can be a constant interval after we split at the poles!
+  // assert(!V->IsConstantRange() && N->IsConstantRange());
 	 
   switch (Pred){
   case ICmpInst::ICMP_EQ:
@@ -1145,19 +1251,24 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
     }
   case ICmpInst::ICMP_NE:
     {
-      // The only case to improve the range of V is in case N is
-      // either the upper bound of V or its lower bound. This case
-      // doesn't change wrt to the unwrapped case.
-      if (V->getLB() == N->getLB())
-	LHS->setLB(V->getLB() + 1);      
-      else
-	LHS->setLB(V->getLB());
+      // this can happen after we split at the poles
+      if (V->isGammaSingleton() && V->isEqual(N)){
+	LHS->makeBot();
+      }
+      else{
+	// The only case to improve the range of V is in case N is
+	// either the upper bound of V or its lower bound. This case
+	// doesn't change wrt to the unwrapped case.
+	if (V->getLB() == N->getLB())
+	  LHS->setLB(V->getLB() + 1);      
+	else
+	  LHS->setLB(V->getLB());
 
-      if (V->getUB() == N->getUB())
-	LHS->setUB(V->getUB() - 1);
-      else
-	LHS->setUB(V->getUB());          
-
+	if (V->getUB() == N->getUB())
+	  LHS->setUB(V->getUB() - 1);
+	else
+	  LHS->setUB(V->getUB());          
+      }
       return;
     }
   case ICmpInst::ICMP_ULE:
@@ -1165,12 +1276,18 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
     { /* if v <= n then rng(v) /\ [-oo,n] */      
       // prepare the range [-oo,n]
       // we use signed or unsigned min depending on the instruction
-      WrappedRange *TmpRng = new WrappedRange(*N);      
-      TmpRng->setLB(getMinValue(Pred)); 	      
-      LHS->WrappedMeet(V,TmpRng,IsSignedCompInst(Pred));
-      delete TmpRng;
-      if (LHS->isBot())
-	LHS->WrappedRangeAssign(V);
+      WrappedRange TmpRng(*N);      
+      TmpRng.setLB(getMinValue(Pred)); 	      
+      WrappedRange meet = WrappedMeet(V,&TmpRng);
+      if (meet.isBot()){
+	// we return bottom because this method is called on each
+	// segment after cutting the original interval. If the meet of
+	// two segments is bottom it doesn't mean that we have to give
+	// up and assign V to LHS.
+	LHS->makeBot(); //LHS->WrappedRangeAssign(V);
+      }
+      else
+	LHS->WrappedRangeAssign(&meet);
       return;
     }
   case ICmpInst::ICMP_ULT:	  
@@ -1178,16 +1295,17 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
     { /* if v < n then rng(v) /\ [-oo,n-1] */
       // prepate the range [-oo,n-1]
       // we use signed or unsigned min depending on the instruction
-      WrappedRange *TmpRng = new WrappedRange(*N);      
-      TmpRng->setLB(getMinValue(Pred));      
-      if (N->getLB() == N->getMinValue()) // to avoid weird things 
-	TmpRng->setUB(N->getLB());        // if overflow
+      WrappedRange TmpRng(*N);      
+      TmpRng.setLB(getMinValue(Pred));      
+      // if (N->getLB() == APInt::getMinValue(LHS->getWidth())) // to avoid overflow
+      // 	TmpRng->setUB(N->getLB());        
+      // else
+      TmpRng.setUB(N->getLB() - 1);   	
+      WrappedRange meet = WrappedMeet(V,&TmpRng);
+      if (meet.isBot())
+	LHS->makeBot(); //LHS->WrappedRangeAssign(V);
       else
-	TmpRng->setUB(N->getLB() - 1);   	
-      LHS->WrappedMeet(V,TmpRng,IsSignedCompInst(Pred));
-      delete TmpRng;
-      if (LHS->isBot())
-	LHS->WrappedRangeAssign(V);
+	LHS->WrappedRangeAssign(&meet);
       return;
     }
   case ICmpInst::ICMP_UGT:
@@ -1195,16 +1313,17 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
     { /* if v > n then  rng(v) /\ [n+1,+oo] */ 
       // prepare range [n+1,+oo]
       // we use signed or unsigned max depending on the instruction
-      WrappedRange *TmpRng = new WrappedRange(*N);
-      TmpRng->setUB(getMaxValue(Pred));
-      if (N->getUB() == N->getMaxValue()) // to avoid weird things 
-        TmpRng->setLB(N->getUB());        // if overflow
+      WrappedRange TmpRng(*N);
+      TmpRng.setUB(getMaxValue(Pred));
+      // if (N->getUB() == APInt::getMaxValue(LHS->getWidth())) // to avoid overflow
+      // 	TmpRng->setLB(N->getUB());       
+      // else
+      TmpRng.setLB(N->getUB() + 1);       
+      WrappedRange meet = WrappedMeet(V,&TmpRng);
+      if (meet.isBot())
+	LHS->makeBot(); // LHS->WrappedRangeAssign(V);
       else
-	TmpRng->setLB(N->getUB() + 1);       
-      LHS->WrappedMeet(V,TmpRng,IsSignedCompInst(Pred));
-      delete TmpRng;
-      if (LHS->isBot())
-	LHS->WrappedRangeAssign(V);
+	LHS->WrappedRangeAssign(&meet);
       return;
     }    
   case ICmpInst::ICMP_UGE:
@@ -1212,13 +1331,14 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
     { /* if v >= n then  rng(v) /\ [n,+oo] */ 
       // prepare the range [n,+oo]
       // we use signed or unsigned max depending on the instruction
-      WrappedRange *TmpRng = new WrappedRange(*N);
-      TmpRng->setLB(N->getUB()); 
-      TmpRng->setUB(getMaxValue(Pred)); 
-      LHS->WrappedMeet(V,TmpRng,IsSignedCompInst(Pred));
-      delete TmpRng;
-      if (LHS->isBot())
-	LHS->WrappedRangeAssign(V);
+      WrappedRange TmpRng(*N);
+      TmpRng.setLB(N->getUB()); 
+      TmpRng.setUB(getMaxValue(Pred)); 
+      WrappedRange meet = WrappedMeet(V,&TmpRng);
+      if (meet.isBot())
+	LHS->makeBot(); // LHS->WrappedRangeAssign(V);
+      else
+	LHS->WrappedRangeAssign(&meet);
       return;
     }  
   default:
@@ -1227,37 +1347,60 @@ void WrappedRange::filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, Wrapp
 }
 
 /// The condition of the branch involves two variables.
-void WrappedRange::filterSigma_TwoVars(unsigned Pred, 
-				       WrappedRange *I1, WrappedRange *I2){
-
-  // Assumption: V1 is the range we would like to improve using
-  // information from Pred and V2
+/// I1 is the range we would like to improve using information from
+/// Pred and I2.
+///
+/// Pre: I1 and I2 are not top because they have been split before at
+/// the poles.
+void WrappedRange::
+  filterSigma_TwoVars(unsigned Pred, WrappedRange *I1, WrappedRange *I2){
+		      
   WrappedRange *LHS  = this;  
   // This is also gross but we need to turn off the bottom flag. Of
   // course, if the meet operation returns bottom then the
   // bottom flag will turn on again.
   LHS->resetBottomFlag();
 
-  assert(!I1->IsConstantRange() &&  !I2->IsConstantRange());
+  // V can be a constant interval after we split at the poles!
+  // assert(!I1->IsConstantRange() &&  !I2->IsConstantRange());
 
   // Special cases first
   if (I2->isBot()){ 
-    // If I2 is bottom, we dont' have chance to improve I1
+    // FIXME: If I2 is bottom, we dont' have chance to improve I1
+    // It should be probably bottom but to return the I1's bounds is
+    // sound. For comparison reasons, ensure always that Range and
+    // WrappedRange do the same.
     LHS->setLB(I1->getLB());
     LHS->setUB(I1->getUB());    
     return;
   }
 
-  ///// KEY OPERATION and difference wrt to Range class.
-  LHS->WrappedMeet(I1,I2,IsSignedCompInst(Pred));
+  ///// KEY OPERATION and difference wrt to Range class.  FIXME: we
+  ///// should have this operation like a template for reusing
+  WrappedRange meet =  WrappedMeet(I1,I2);
 
-  if (LHS->isBot()){
+#ifdef DEBUG_FILTER_SIGMA
+  dbgs() << "\tmeet of two variables involved in the comparison: " 
+	 <<  meet << "\n";
+#endif 
+
+  if (meet.isBot()){
     // If I1 and I2 are disjoint we don't have chance to improve I1
     // E.g. [0,2] < [10,50]
     // The meet here is bottom so we cannot improve
-    LHS->setLB(I1->getLB());
-    LHS->setUB(I1->getUB());    
+    // LHS->setLB(I1->getLB());
+    // LHS->setUB(I1->getUB());    
+    //
+    // (*)Improvement: we can return bottom because this method is called
+    // on each segment after cutting the original interval. If the
+    // meet of two segments is bottom it doesn't mean that we have to
+    // give up and assign V to LHS. The caller will take care of this.
+    LHS->makeBot();
     return;
+  }
+  else{
+    LHS->setLB(meet.getLB());
+    LHS->setUB(meet.getUB());    
   }
 
   switch(Pred){
@@ -1265,71 +1408,82 @@ void WrappedRange::filterSigma_TwoVars(unsigned Pred,
     // LHS is the meet between I1 and I2
     return;
   case ICmpInst::ICMP_NE:  
-    LHS->setLB(I1->getLB());
-    LHS->setUB(I1->getUB());        
-    // Minor improvement if I2 is a point
-    if (I2->getLB() == I2->getUB()){ 
-      if (I1->getLB() == I2->getLB())
-	LHS->setLB(LHS->getLB()+1);
-      if (I1->getUB() == I2->getUB())
-	LHS->setUB(LHS->getUB()-1);
-    }
-    return;
+      // this can happen after we split at the poles
+     if (I1->isGammaSingleton() && I1->isEqual(I2)){
+	LHS->makeBot();
+      }
+      else{
+	LHS->setLB(I1->getLB());
+	LHS->setUB(I1->getUB());        
+	// Minor improvement if I2 is a point
+	if (I2->getLB() == I2->getUB()){ 
+	  if (I1->getLB() == I2->getLB())
+	    LHS->setLB(LHS->getLB()+1);
+	if (I1->getUB() == I2->getUB())
+	  LHS->setUB(LHS->getUB()-1);
+	}
+      }
+      return;
   case ICmpInst::ICMP_ULT: // I1 <  I2
   case ICmpInst::ICMP_ULE: // I1 <= I2
   case ICmpInst::ICMP_SLT: // I1 <  I2
   case ICmpInst::ICMP_SLE: // I1 <= I2
-    if (BaseRange::bridge_IsIncluded(Pred,I2->getLB(),I2->getUB(),I1->getLB(),I1->getUB())){
-      // Case where we can improve further the meet: I2 is included in I1 
-      // E.g., [-10,+oo] <= [-5,-2] --> [-10,-2]
-      // E.g., [-10,+oo] <  [-5,-2] --> [-10,-3]
-      LHS->setLB(I1->getLB());
+    {
+      APInt a = I1->getLB();
+      APInt b = I1->getUB();
+      APInt c = I2->getLB();
+      APInt d = I2->getUB();
+
+      bool IsSignedOp = (Pred==ICmpInst::ICMP_SGE || Pred==ICmpInst::ICMP_SGT);
+
+      APInt refined_d;
       if (Pred == ICmpInst::ICMP_SLT || Pred == ICmpInst::ICMP_ULT)
-	LHS->setUB(I2->getUB() - 1);
+	refined_d = d - 1;
+      else 
+	refined_d = d;
+
+      LHS->setLB(a);
+      bool canRefine;
+      (IsSignedOp? canRefine = d.sle(b) : canRefine = d.ule(b));
+      if (canRefine)
+	LHS->setUB(refined_d);
       else
-	LHS->setUB(I2->getUB());
-      return;
+	LHS->setUB(b);
     }
-    if (BaseRange::bridge_IsOverlapLeft(Pred,I1->getLB(),I1->getUB(),I2->getLB(),I2->getUB())){
-      // The result is the meet between I1 and I2
-      return;
-    }     
-    // Otherwise, no improvement. That is, overlap-right or I1
-    // included in I2 cannot improve our knowledge about I1
-    LHS->setLB(I1->getLB());
-    LHS->setUB(I1->getUB());    
     return;
   case ICmpInst::ICMP_UGT: 
   case ICmpInst::ICMP_UGE: 
   case ICmpInst::ICMP_SGT: 
   case ICmpInst::ICMP_SGE: 
-    if (BaseRange::bridge_IsIncluded(Pred,I2->getLB(),I2->getUB(),I1->getLB(),I1->getUB())){
-      ////////////////////////////////////////////////////////////////////////////
-      // Case where we can improve further the meet
-      ////////////////////////////////////////////////////////////////////////////
-      // E.g., [-10,+oo] >= [-5,-2] --> [-5,+oo]
-      // E.g., [-10,+oo] >  [-5,-2] --> [-4,+oo]
-      LHS->setUB(I1->getUB());
+    {
+      bool IsSignedOp = (Pred == ICmpInst::ICMP_SGE || Pred == ICmpInst::ICMP_SGT);
+      APInt a = I1->getLB();
+      APInt b = I1->getUB();
+      APInt c = I2->getLB();
+      APInt d = I2->getUB();
+
+      APInt refined_c;
       if (Pred == ICmpInst::ICMP_SGE || Pred == ICmpInst::ICMP_UGE)
-	LHS->setLB(I2->getLB());
+	refined_c= c;
+      else 
+	refined_c = c+1;
+
+      LHS->setUB(b);
+      bool canRefine;
+      (IsSignedOp? canRefine = a.sle(c) : canRefine = a.ule(c));
+      if (canRefine)
+	LHS->setLB(refined_c);
       else
-	LHS->setLB(I2->getLB()+1);	
-      return;
+	LHS->setLB(a);
     }
-    if (BaseRange::bridge_IsOverlapRight(Pred,I1->getLB(),I1->getUB(),I2->getLB(),I2->getUB())){
-      // The result is the meet between I1 and I2
-      return;
-    }
-    // Otherwise, no improvement. That is, overlap-left or if I1 is
-    // included in I2 do not provide new knowledge about I1
-    LHS->setLB(I1->getLB());
-    LHS->setUB(I1->getUB());    
     return;
   default: ;
   }
 }
 
+////
 // Begin overflow checks  for arithmetic operations
+////
 
 /// Return true iff overflow during addition or substraction (same
 /// condition).
@@ -1345,22 +1499,11 @@ bool IsWrappedOverflow_AddSub(APInt a, APInt b, APInt c, APInt d){
   // exception.
   uint64_t n1  =  tmp1.getZExtValue();
   uint64_t n2  =  tmp2.getZExtValue();
-  uint64_t Max = (APInt::getMaxValue(width)).getZExtValue();
+  uint64_t Max = (APInt::getMaxValue(width)).getZExtValue() + 1;
 #ifdef DEBUG_OVERFLOW_CHECKS
   dbgs() << "\nOverflow test: " << n1 << "+" << n2 << " >= " << Max << "\n";
 #endif
   return ((n1 + n2) > Max);
-}
-
-/// return true iff overflow during truncation.
-bool IsWrappedOverflow_Trunc(WrappedRange * RHS, unsigned destWidth){
-  APInt a = RHS->getLB();
-  APInt b = RHS->getUB();
-  APInt tmp  = WrappedRange::WCard(a,b);
-  // If tmp does not fit into uint64_t then APInt raises an exception.
-  uint64_t n   =  tmp.getZExtValue();
-  uint64_t Max = (APInt::getMaxValue(destWidth)).getZExtValue();
-  return (n > Max);
 }
 
 
@@ -1371,110 +1514,89 @@ bool IsWrappedOverflow_Shl(WrappedRange * Op, APInt shift){
   APInt tmp  = WrappedRange::WCard(a,b);
   // If tmp does not fit into uint64_t then APInt raises an exception.
   uint64_t n   =  tmp.getZExtValue() << shift.getZExtValue();
-  uint64_t Max = (APInt::getMaxValue(a.getBitWidth())).getZExtValue();
+  uint64_t Max = (APInt::getMaxValue(a.getBitWidth())).getZExtValue() + 1; 
   return (n > Max);
 }
 
-/// Do some preparation for testing overflow
-
-void promoteAPIntToRawInt(APInt a, APInt b, APInt c, APInt d,
-			  // APInt's promoted to uint64_t's
-			  uint64_t &na, uint64_t &nb, uint64_t &nc, uint64_t &nd,
-			  // Max for overflow checks
-			  uint64_t &Max){
-  // If a,b,c,or d do not fit into uint64_t or they do not have same
-  // width then APInt raises an exception
-  na = a.getZExtValue();
-  nb = b.getZExtValue();
-  nc = c.getZExtValue();
-  nd = d.getZExtValue();
-  unsigned width = a.getBitWidth();
-  Max = (APInt::getMaxValue(width)).getZExtValue();
-}
-
+////
 // End overflow checks  for arithmetic operations
+////
 
+////
 // Begin machinery for arithmetic and bitwise operations
+////
 
-std::vector<WrappedRange*> WrappedRange::nsplit(APInt x, APInt y, unsigned width){
+/// Cut only at north pole
+std::vector<WrappedRangePtr> 
+WrappedRange::nsplit(APInt x, APInt y, unsigned width){
+
   // Temporary wrapped interval for north pole
   APInt NP_lb = APInt::getSignedMaxValue(width); // 0111...1
   APInt NP_ub = APInt::getSignedMinValue(width); // 1000...0
-  WrappedRange *NP = new WrappedRange(NP_lb,NP_ub,width);
+  WrappedRange NP(NP_lb,NP_ub,width);
+
   // Temporary wrapped interval 
-  WrappedRange *s  = new WrappedRange(x,y,width);
+  WrappedRangePtr s(new WrappedRange(x,y,width));
 
-  std::vector<WrappedRange*> res;
-  if (s->WrappedlessOrEqual(NP, true)){
-    ///                         ^^^^ signed
+  std::vector<WrappedRangePtr> res;
+  if (!(NP.WrappedlessOrEqual(s.get()))){
+    ////
     // No need of split
+    ////
     res.push_back(s);
-    // dbgs() << "No split for: " << "[" << x << "," << y << "]" << "\n ";  
-
-    // delete NP;
     return res;
   }
-  // dbgs() << "Splitting:" << "[" << x << "," << y << "]" << " into:\n ";  
-  // Split into two wrapped intervals
-  WrappedRange *s1  = new WrappedRange(x,NP_lb,width); // [x,  0111...1]
-  WrappedRange *s2  = new WrappedRange(NP_ub,y,width); // [1000....0, y]
-
-  /*
-    s1->printRange(dbgs());
-    dbgs() << " and ";
-    s2->printRange(dbgs());
-    dbgs() << "\n";
-  */
-
-  res.push_back(s1);
-  res.push_back(s2);
-
-  // delete NP;
-  // delete s;  
-  return res;  
+  else{
+    // Split into two wrapped intervals
+    WrappedRangePtr s1(new WrappedRange(x,NP_lb,width)); // [x,  0111...1]
+    WrappedRangePtr s2(new WrappedRange(NP_ub,y,width)); // [1000....0, y]
+    res.push_back(s1);
+    res.push_back(s2);
+    return res;  
+  }
 }
 
-std::vector<WrappedRange*> WrappedRange::ssplit(APInt x, APInt y, unsigned width){
+/// Cut only at south pole
+std::vector<WrappedRangePtr> 
+WrappedRange::ssplit(APInt x, APInt y, unsigned width){
   // Temporary wrapped interval for south pole
-  APInt SP_lb(width,-1,false);          // 111...1
-  //                    ^^^^^ unsigned  // 000...0
-  APInt SP_ub(width, 0,false);
+  APInt SP_lb = APInt::getMaxValue(width); // 111...1
+  APInt SP_ub(width, 0, false);
   //                    ^^^^^ unsigned
-  WrappedRange *SP = new WrappedRange(SP_lb,SP_ub,width);
+  WrappedRange SP(SP_lb,SP_ub,width);
   // Temporary wrapped interval 
-  WrappedRange *s  = new WrappedRange(x,y,width);
+  WrappedRangePtr s(new WrappedRange(x,y,width));
 
-  std::vector<WrappedRange*> res;
-  if (s->WrappedlessOrEqual(SP,false)){
-    //                         ^^^^^ unsigned
+  std::vector<WrappedRangePtr> res;
+  if (!(SP.WrappedlessOrEqual(s.get()))){
+    ////
     // No need of split
+    ////
     res.push_back(s);
-
-    //  delete SP;
+    //dbgs() << "{" << *(s.get()) << "}\n";
     return res;
   }
-  
-  // Split into two wrapped intervals
-  WrappedRange *s1  = new WrappedRange(x,SP_lb,width); // [x, 111....1]
-  WrappedRange *s2  = new WrappedRange(SP_ub,y,width); // [000...0,  y] 
-  res.push_back(s1);
-  res.push_back(s2);
-
-  //delete SP;
-  //delete s;
-  return res;  
+  else{
+    // Split into two wrapped intervals
+    WrappedRangePtr s1(new WrappedRange(x,SP_lb,width)); // [x, 111....1]
+    WrappedRangePtr s2(new WrappedRange(SP_ub,y,width)); // [000...0,  y] 
+    res.push_back(s1);
+    res.push_back(s2);
+    //dbgs() << "{" << *(s1.get()) << "," << *(s2.get()) << "}\n";
+    return res;  
+  }
 }
 
+/// Cut both at north and south poles
+std::vector<WrappedRangePtr> psplit(APInt x, APInt y, unsigned width){
 
-std::vector<WrappedRange*> psplit(APInt x, APInt y, unsigned width){
+  std::vector<WrappedRangePtr> res;  
+  std::vector<WrappedRangePtr> s1 = WrappedRange::nsplit(x,y,width);
 
-  std::vector<WrappedRange*> res;  
-  std::vector<WrappedRange*> s1 = WrappedRange::nsplit(x,y,width);
-
-  for (std::vector<WrappedRange*>::iterator I = s1.begin(),
+  for (std::vector<WrappedRangePtr>::iterator I = s1.begin(),
 	 E=s1.end() ; I!=E ; ++I){
-    WrappedRange *r = *I;
-    std::vector<WrappedRange*> s2  = 
+    WrappedRange *r = (*I).get();
+    std::vector<WrappedRangePtr> s2  = 
       WrappedRange::ssplit(r->getLB(),r->getUB(),r->getLB().getBitWidth());
     // append all elements of s2 into res
     res.insert(res.end(),s2.begin(),s2.end());
@@ -1482,95 +1604,161 @@ std::vector<WrappedRange*> psplit(APInt x, APInt y, unsigned width){
   return res;
 }
 
+std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
+  std::vector<WrappedRangePtr> purgedZeroIntervals;
+
+  WrappedRange * R = RPtr.get();
+
+  unsigned width = R->getLB().getBitWidth();
+  // Temporary wrapped interval for zero
+  APInt Zero_lb(width, 0, true);          // 000...0 
+  APInt Zero_ub(width, 0, true);          // 000...0 
+  WrappedRange Zero(Zero_lb,Zero_ub,width);
+
+  if (Zero.lessOrEqual(R)){
+    if (R->getLB() == 0){
+      if (R->getUB() != 0){
+	// Does not cross the south pole
+	WrappedRangePtr s(new WrappedRange(R->getLB()+1,R->getUB(),width)); 
+	purgedZeroIntervals.push_back(s);      
+      }
+      // if the interval is [0,0] we don't push anything
+    }
+    else{
+      // Cross the south pole: split into two intervals
+      APInt plusOne(width, 1, true);              // 000...1 
+      APInt minusOne = APInt::getMaxValue(width); // 111...1
+      WrappedRangePtr s1(new WrappedRange(R->getLB(),minusOne  ,width)); // [x, 111....1]
+      WrappedRangePtr s2(new WrappedRange(plusOne   ,R->getUB(),width));  // [000...1,  y] 
+      purgedZeroIntervals.push_back(s1);
+      purgedZeroIntervals.push_back(s2);
+    }
+  }
+  else{  
+    // No need of split
+    WrappedRangePtr s(new WrappedRange(*R));
+    purgedZeroIntervals.push_back(s);
+  }
+  return purgedZeroIntervals;
+}
+
+std::vector<WrappedRangePtr>  
+purgeZero(const std::vector<WrappedRangePtr> &Vs){
+  std::vector<WrappedRangePtr> res;
+  for (unsigned int i=0; i<Vs.size(); i++){
+    std::vector<WrappedRangePtr> purgedZeroIntervals = purgeZero(Vs[i]);
+    res.insert(res.end(), 
+	       purgedZeroIntervals.begin(), 
+	       purgedZeroIntervals.end());
+  }
+  return res;
+}
+////
 // End machinery for arithmetic and bitwise operations
+////
 
+WrappedRange UnsignedWrappedMult(const WrappedRange *Op1, 
+				 const WrappedRange *Op2){
+				   
+  WrappedRange Res(*Op1);
 
-void UnsignedWrappedMult(WrappedRange *LHS,
-			 WrappedRange *Op1, WrappedRange *Op2){
-
-  uint64_t na,nb,nc,nd,Max;
-  promoteAPIntToRawInt(Op1->getLB(),Op1->getUB(),Op2->getLB(),Op2->getUB(),
-		       na,nb,nc,nd,Max);
-
-  if ((nb*nd) - (na*nc) > Max){
-    NumOfOverflows++;
-    LHS->makeTop();
-    return;
-  }	
-  LHS->setLB(Op1->getLB() * Op2->getLB());
-  LHS->setUB(Op1->getUB() * Op2->getUB());
-  return;  
-}
-
-
-/// When we say positive or negative we simply means if the MSB is 1
-/// or 0. We rely on APInt::isNegative to return true if the high bit
-/// of the APInt is set.
-bool AllSameSign(APInt a, APInt b, APInt c, APInt d){
-  bool AllNeg = (a.isNegative()    && b.isNegative()    && c.isNegative()    && d.isNegative());
-  bool AllPos = (a.isNonNegative() && b.isNonNegative() && c.isNonNegative() && d.isNonNegative());
-  return (AllNeg || AllPos);
-}
-
-bool HasNegPos(APInt a, APInt b, APInt c, APInt d){
-  return ((a.isNegative() && b.isNegative()) 
-	  &&
-	  (c.isNonNegative() && d.isNonNegative()) );
-}
-
-bool HasPosNeg(APInt a, APInt b, APInt c, APInt d){
-  return ((a.isNonNegative() && b.isNonNegative()) 
-	  &&
-	  (c.isNegative() && d.isNegative()) );
-}
-
-
-void SignedWrappedMult(WrappedRange *LHS,
-		       WrappedRange *Op1, WrappedRange *Op2){
   APInt a = Op1->getLB();
   APInt b = Op1->getUB();
   APInt c = Op2->getLB();
   APInt d = Op2->getUB();
 
-  if (AllSameSign(a,b,c,d)){
-    // Overflow check is done by UnsignedWrappedMult
-    return UnsignedWrappedMult(LHS,Op1,Op2);
-  }
+  bool Overflow1, Overflow2;
+  APInt lb = a.umul_ov(c,Overflow1);
+  APInt ub = b.umul_ov(d,Overflow2);
 
-  uint64_t na,nb,nc,nd,Max;
-  promoteAPIntToRawInt(Op1->getLB(),Op1->getUB(),Op2->getLB(),Op2->getUB(),
-		       na,nb,nc,nd,Max);
-
-  if (HasNegPos(a,b,c,d) && ((nb*nc) - (na*nd) <= Max)){
-    LHS->setLB(a*d);
-    LHS->setUB(b*c);    
-    return;
+  if (Overflow1 || Overflow2){
+    NumOfOverflows++;
+    Res.makeTop();    
+    return Res;
   }
-
-  if (HasPosNeg(a,b,c,d) && ((na*nd) - (nb*nc) <= Max)){
-    LHS->setLB(b*c);
-    LHS->setUB(a*d);    
-    return;
+  else{
+    Res.setLB(lb);
+    Res.setUB(ub);
+    return Res;  
   }
+}
+
+
+inline bool AllPos(APInt a, APInt b, APInt c, APInt d){
+  return (IsMSBZero(a) && IsMSBZero(b) && IsMSBZero(c) && IsMSBZero(d));
+}
+
+inline bool AllNeg(APInt a, APInt b, APInt c, APInt d){
+  return (IsMSBOne(a) && IsMSBOne(b) && IsMSBOne(c) && IsMSBOne(d));
+}
+
+WrappedRange SignedWrappedMult(const WrappedRange *Op1, 
+			       const WrappedRange *Op2){
+		       
+  WrappedRange Res(*Op1);
+
+  APInt a = Op1->getLB();
+  APInt b = Op1->getUB();
+  APInt c = Op2->getLB();
+  APInt d = Op2->getUB();
+
+  // [2,5]   * [10,20]   = [20,100]
+  if (AllPos(a,b,c,d)){
+    bool Overflow1, Overflow2;
+    APInt lb = a.smul_ov(c,Overflow1);
+    APInt ub = b.smul_ov(d,Overflow2);
+    if (!Overflow1 && !Overflow2){
+      Res.setLB(lb);
+      Res.setUB(ub);
+      return Res;
+    }
+  }
+  // [-5,-2] * [-20,-10] = [20,100]
+  else if (AllNeg(a,b,c,d)){
+    bool Overflow1, Overflow2;
+    APInt lb = b.smul_ov(d,Overflow1);
+    APInt ub = a.smul_ov(c,Overflow2);
+    if (!Overflow1 && !Overflow2){
+      Res.setLB(lb);
+      Res.setUB(ub);
+      return Res;
+    }
+  }
+  // [-10, -2] * [2, 5] = [-50,-4]
+  else if (IsMSBOne(a) && IsMSBOne(b) && IsMSBZero(c) && IsMSBZero(d)){
+    bool Overflow1, Overflow2;
+    APInt lb = a.smul_ov(d,Overflow1);
+    APInt ub = b.smul_ov(c,Overflow2);
+    if (!Overflow1 && !Overflow2){
+      Res.setLB(lb);
+      Res.setUB(ub);
+      return Res;
+    }
+  }
+  // [2, 10] * [-5, -2] = [-50,-4]
+  else if (IsMSBZero(a) && IsMSBZero(b) && IsMSBOne(c) && IsMSBOne(d)){
+    bool Overflow1, Overflow2;
+    APInt lb = b.smul_ov(c,Overflow1);
+    APInt ub = a.smul_ov(d,Overflow2);
+    if (!Overflow1 && !Overflow2){
+      Res.setLB(lb);
+      Res.setUB(ub);
+      return Res;
+    }
+  }
+  else 
+    assert(false && "Unsupported case!");
 
   NumOfOverflows++;  
-  LHS->makeTop();
+  Res.makeTop();
+
+  return Res;
 }
 
-void SignedUnsignedWrappedMult(WrappedRange *Res,	
-			       WrappedRange *Op1, WrappedRange *Op2){
-  WrappedRange *Tmp1 = new WrappedRange(*Res);
-  WrappedRange *Tmp2 = new WrappedRange(*Res);
-  UnsignedWrappedMult(Tmp1,Op1,Op2);
-  SignedWrappedMult(Tmp2,Op1,Op2);
-  Res->WrappedMeet(Tmp1,Tmp2, __SIGNED);
 
-  //delete Tmp1;
-  //delete Tmp2;      
-}
-    
 void WrappedRange::WrappedMultiplication(WrappedRange *LHS, 
-					 WrappedRange *Op1,WrappedRange *Op2){
+					  const WrappedRange *Op1, 
+					  const WrappedRange *Op2){
   // Trivial case
   if (Op1->IsZeroRange() || Op2->IsZeroRange()){
     LHS->setLB((uint64_t) 0);
@@ -1578,96 +1766,347 @@ void WrappedRange::WrappedMultiplication(WrappedRange *LHS,
     return;
   }
   
-  // General case: south pole split and north pole split (signed) and
-  // compute operation for each element of the Cartesian product and
+  // General case: south pole and north pole cuts, meet the signed and
+  // unsigned operation for each element of the Cartesian product and
   // then lubbing them
-  std::vector<WrappedRange*> s1 = 
+  std::vector<WrappedRangePtr> s1 = 
     psplit(Op1->getLB(), Op1->getUB(), Op1->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
+  std::vector<WrappedRangePtr> s2 = 
     psplit(Op2->getLB(), Op2->getUB(), Op2->getLB().getBitWidth());
-  WrappedRange * Tmp = new WrappedRange(*LHS);
+
   LHS->makeBot();  
-  for (std::vector<WrappedRange*>::iterator I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
-      SignedUnsignedWrappedMult(Tmp,*I1,*I2);
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+    for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+      WrappedRange Tmp1 = UnsignedWrappedMult((*I1).get(),(*I2).get());
+      WrappedRange Tmp2 = SignedWrappedMult((*I1).get(),(*I2).get());
+#ifdef DEBUG_MULT
+      dbgs() << "Op1=" << *((*I1).get()) << " Op2=" << *((*I2).get()) << "\n";
+      dbgs() << "Unsigned version    : " << Tmp1 << "\n";
+      dbgs() << "Signed version      : " << Tmp2 << "\n";
+#endif 
+      WrappedRange tmp = WrappedMeet(&Tmp1,&Tmp2);
+#ifdef DEBUG_MULT
+      dbgs() << "The best of the two : " << tmp << "\n";
+#endif 
       // TODO: better call to GeneralizedJoin with all Tmps's
-      LHS->join(Tmp);
+      LHS->join(&tmp);
+#ifdef DEBUG_MULT
+      dbgs() << "Final multiplication so far : " << *LHS << "\n";
+#endif 
     }
   }
-
-  // delete Tmp;
+#ifdef DEBUG_MULT
+  dbgs() << "-----------------------------------\n";
+#endif 
 }
 
-void WrappedRange::WrappedDivisionAndRem(unsigned Opcode,
-					 WrappedRange *LHS, 
-					 WrappedRange *Dividend, WrappedRange *Divisor, 
-					 bool IsSigned){
 
-  assert(!Divisor->IsZeroRange() && "ERROR: division by zero!");
+// Pre: Divisor does not contain the interval [0,0] and does not
+// straddle the poles.
+WrappedRange WrappedUnsignedDivision(WrappedRange const *Dividend, 
+				     WrappedRange const *Divisor){
 
-  // Trivial case
+  WrappedRange Res(*Dividend);
+  APInt a = Dividend->getLB();
+  APInt b = Dividend->getUB();
+  APInt c = Divisor->getLB();
+  APInt d = Divisor->getUB();
+  
+  Res.setLB(a.udiv(d));
+  Res.setUB(b.udiv(c));
+  return Res;
+}
+
+// Pre: Divisor does not contain the interval [0,0] and does not
+// straddle the poles.
+WrappedRange WrappedSignedDivision(WrappedRange const *Dividend, 
+				   WrappedRange const *Divisor, 
+				   bool & IsOverflow){
+
+  IsOverflow = false;
+
+  WrappedRange Res(*Dividend);
+  APInt a = Dividend->getLB();
+  APInt b = Dividend->getUB();
+  APInt c = Divisor->getLB();
+  APInt d = Divisor->getUB();
+
+#ifdef DEBUG_DIVISION  
+  dbgs() << "After removing [0,0] and cutting at poles: ";
+  dbgs() << "[" << a << "," << b << "] /_s ";
+  dbgs() << "[" << c << "," << d << "]\n";
+#endif 
+
+  if (IsMSBZero(a) && IsMSBZero(c)){
+    bool IsOverflow1, IsOverflow2;
+    Res.setLB(a.sdiv_ov(d,IsOverflow1));
+    Res.setUB(b.sdiv_ov(c,IsOverflow2));
+    IsOverflow = IsOverflow1 || IsOverflow2;
+#ifdef DEBUG_DIVISION  
+    dbgs() << "\tMSB(a)=MSB(c)=0\n\t";
+    dbgs() << Res << "\n";
+#endif 
+    return Res;
+  }
+  else if (IsMSBOne(a) && IsMSBOne(c)){
+    bool IsOverflow1, IsOverflow2;
+    Res.setLB(b.sdiv_ov(c,IsOverflow1));
+    Res.setUB(a.sdiv_ov(d,IsOverflow2));
+    IsOverflow = IsOverflow1 || IsOverflow2;
+#ifdef DEBUG_DIVISION  
+    dbgs() << "\tMSB(a)=MSB(c)=1\n\t";
+    dbgs() << Res << "\n";
+#endif 
+    return Res;    
+  }
+  else if (IsMSBZero(a) && IsMSBOne(c)){
+    bool IsOverflow1, IsOverflow2;
+    Res.setLB(b.sdiv_ov(d,IsOverflow1));
+    Res.setUB(a.sdiv_ov(c,IsOverflow2));
+    IsOverflow = IsOverflow1 || IsOverflow2;
+#ifdef DEBUG_DIVISION  
+    dbgs() << "\tMSB(a)=0, MSB(c)=1\n\t";
+    dbgs() << Res << "\n";
+#endif 
+    return Res;    
+  }
+  else if (IsMSBOne(a) && IsMSBZero(c)){
+    bool IsOverflow1, IsOverflow2;
+    Res.setLB(a.sdiv_ov(c,IsOverflow1));
+    Res.setUB(b.sdiv_ov(d,IsOverflow2));
+    IsOverflow = IsOverflow1 || IsOverflow2;
+#ifdef DEBUG_DIVISION  
+    dbgs() << "\tMSB(a)=1, MSB(c)=0\n\t";
+    dbgs() << Res << "\n";
+#endif 
+    return Res;    
+  }
+
+  assert(false && "This should be unreachable");
+}
+
+void WrappedRange::WrappedDivision(WrappedRange *LHS, 
+				   const WrappedRange *Dividend, 
+				   const WrappedRange *Divisor, 
+				   bool IsSignedDiv){
+
+  // Trivial cases
   if (Dividend->IsZeroRange()){
     LHS->setLB((uint64_t) 0);
     LHS->setUB((uint64_t) 0);
-    //   LHS->setWrapped(false);
     return;
   }
+  if (Divisor->IsZeroRange()){
+    LHS->makeBot();
+    return;
+  }
+
+#ifdef DEBUG_DIVISION  
+  dbgs() << "\nBefore removing [0,0] and cutting at poles: \n\t";
+  dbgs() << *Dividend << " /_s " << *Divisor << "\n";
+#endif 
   
-  // General case: south pole split (unsigned) and north pole split
-  // (signed) and compute operation for each element of the Cartesian
-  // product and then lubbing them
+  if (IsSignedDiv){
+    // General case: south pole and north pole cuts and compute signed
+    // operation for each element of the Cartesian product and then
+    // lubbing them. Note that we make sure that [0,0] is removed from
+    // the divisor.
+    std::vector<WrappedRangePtr> s1 = 
+      psplit(Dividend->getLB(), Dividend->getUB(), 
+	     Dividend->getLB().getBitWidth());
+    std::vector<WrappedRangePtr> s2 = 
+      purgeZero(psplit(Divisor->getLB(), Divisor->getUB(), 
+		       Divisor->getLB().getBitWidth()));
+    assert(!s2.empty() && "Sanity check: empty means interval [0,0]");
 
-  if (IsSigned){
-    std::vector<WrappedRange*> s1 = 
-      nsplit(Dividend->getLB(), Dividend->getUB(), Dividend->getLB().getBitWidth());
-    std::vector<WrappedRange*> s2 = 
-      nsplit(Divisor->getLB(), Divisor->getUB(), Divisor->getLB().getBitWidth());
-
-    WrappedRange * Tmp = new WrappedRange(*LHS);
+    typedef std::vector<WrappedRangePtr>::iterator It;
     LHS->makeBot();  
-    for (std::vector<WrappedRange*>::iterator I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
-      for (std::vector<WrappedRange*>::iterator I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
-	// Defined in BaseRange
-	bool IsOverflow;
-	DivRem_GeneralCase(Opcode,Tmp,*I1,*I2,IsOverflow);
-	if (IsOverflow){
-	  NumOfOverflows++;
-	  LHS->makeTop();
-	  break;
-	}
-	LHS->join(Tmp);
+    for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+      for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+   	bool IsOverflow;
+	WrappedRange Tmp = WrappedSignedDivision((*I1).get(),(*I2).get(),
+						 IsOverflow);
+  	if (IsOverflow){
+  	  NumOfOverflows++;
+  	  LHS->makeTop();
+  	  break;
+  	}
+  	LHS->join(&Tmp);
       }
     }
-
-    //delete Tmp;
   }
   else{
-    std::vector<WrappedRange*> s1 = 
-      ssplit(Dividend->getLB(), Dividend->getUB(), Dividend->getLB().getBitWidth());
-    std::vector<WrappedRange*> s2 = 
-      ssplit(Divisor->getLB(), Divisor->getUB(), Divisor->getLB().getBitWidth());
-
-    WrappedRange * Tmp = new WrappedRange(*LHS);
+    // General case: south pole cut and compute unsigned operation for
+    // each element of the Cartesian product and then lubbing
+    // them. Note that we make sure that [0,0] is removed from the
+    // divisor.
+    std::vector<WrappedRangePtr> s1 = 
+      ssplit(Dividend->getLB(), Dividend->getUB(), 
+	     Dividend->getLB().getBitWidth());
+    std::vector<WrappedRangePtr> s2 = 
+      purgeZero(ssplit(Divisor->getLB(), Divisor->getUB(), 
+		       Divisor->getLB().getBitWidth()));
+    assert(!s2.empty() && "Sanity check: empty means interval [0,0]");
     LHS->makeBot();  
-    for (std::vector<WrappedRange*>::iterator I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
-      for (std::vector<WrappedRange*>::iterator I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
-	// Defined in BaseRange
-	//(*I1)->printRange(dbgs()) ; dbgs() << " urem ";
-	//(*I2)->printRange(dbgs()) ; dbgs() << " = ";	
-	UDivRem_GeneralCase(Opcode,Tmp,*I1,*I2);
-	//Tmp->printRange(dbgs()); dbgs() << "\n";
-	LHS->join(Tmp);
+    typedef std::vector<WrappedRangePtr>::iterator It;
+    for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+      for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+	WrappedRange Tmp = WrappedUnsignedDivision((*I1).get(),(*I2).get());
+	LHS->join(&Tmp);
       }
     }
-
-    //delete Tmp;
   }
 }
 
 
+void WrappedRange::
+  WrappedRem(WrappedRange *LHS, 
+	     const WrappedRange *Dividend,  const WrappedRange *Divisor, 
+	     bool IsSignedRem){ 
+
+  // Trivial cases
+  if (Dividend->IsZeroRange()){
+    LHS->setLB((uint64_t) 0);
+    LHS->setUB((uint64_t) 0);
+    return;
+  }
+  if (Divisor->IsZeroRange()){
+    LHS->makeBot();
+    return;
+  }
+  if (IsSignedRem){
+    // General case: south pole cut and compute unsigned operation for
+    // each element of the Cartesian product and then lubbing
+    // them. Note that we make sure that [0,0] is removed from the
+    // divisor.
+    std::vector<WrappedRangePtr> s1 = 
+      ssplit(Dividend->getLB(), Dividend->getUB(), 
+	     Dividend->getLB().getBitWidth());
+
+    std::vector<WrappedRangePtr> s2 = 
+      purgeZero(ssplit(Divisor->getLB(), Divisor->getUB(), 
+		       Divisor->getLB().getBitWidth()));
+    assert(!s2.empty() && "Sanity check: empty means interval [0,0]");
+    LHS->makeBot();  
+    typedef std::vector<WrappedRangePtr>::iterator It;
+    for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+      for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+	APInt a = (*I1).get()->getLB();
+	APInt b = (*I1).get()->getUB();
+	APInt c = (*I2).get()->getLB();
+	APInt d = (*I2).get()->getUB();
+	unsigned width = b.getBitWidth();
+	APInt lb; APInt ub;
+	if (IsMSBZero(a) && IsMSBZero(c)){ 
+	  // [0,d-1]
+	  lb = APInt(width, 0, true); 
+	  ub = d-1;
+	}
+	else if (IsMSBZero(a) && IsMSBOne(c)){
+	  // [0,-c-1]
+	  lb = APInt(width, 0, true); 
+	  ub = -c-1;
+	}
+	else if (IsMSBOne(a) && IsMSBZero(c)){
+	  // [-d+1,0]
+	  lb = -d+1;
+	  ub = APInt(width, 0, true); 
+	}
+	else if (IsMSBOne(a) && IsMSBOne(c)){
+	  // [c+1,0]
+	  lb = c+1;
+	  ub = APInt(width, 0, true); 
+	}
+	else
+	  assert(false && "This should be unreachable!");
+
+	WrappedRange tmp(lb,ub,width);	 
+	LHS->join(&tmp);
+      }
+    }
+  }
+  else{
+    // General case: south pole cut and compute unsigned operation for
+    // each element of the Cartesian product and then lubbing
+    // them. Note that we make sure that [0,0] is removed from the
+    // divisor.
+    std::vector<WrappedRangePtr> s1 = 
+      ssplit(Dividend->getLB(), Dividend->getUB(), 
+	     Dividend->getLB().getBitWidth());
+    std::vector<WrappedRangePtr> s2 = 
+      purgeZero(ssplit(Divisor->getLB(), Divisor->getUB(), 
+		       Divisor->getLB().getBitWidth()));
+    assert(!s2.empty() && "Sanity check: empty means interval [0,0]");
+    LHS->makeBot();  
+    typedef std::vector<WrappedRangePtr>::iterator It;
+    for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+      for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+	// This is a special case that can improve precision. It can
+	// be used also for the signed case. This is described in our
+	// journal version:
+	// WrappedRange Div = WrappedUnsignedDivision((*I1).get(),(*I2).get());
+	// if (WCard(Div.getLB(), Div.getUB()) == 1){
+	//   WrappedRange tmp1(*(*I2).get());
+	//   WrappedRange tmp2(*(*I2).get());
+	//   WrappedMinus(&tmp1,(*I1).get(),&Div);
+	//   WrappedMultiplication(&tmp2,&tmp1,(*I2).get());
+	//   LHS->join(&tmp2);
+	// }
+	// else{
+	APInt d  = (*I2).get()->getUB();
+	APInt lb = APInt(width, 0, true); 
+	APInt ub = d - 1;
+ 	unsigned width = d.getBitWidth();
+	WrappedRange tmp(lb,ub,width);	 
+	LHS->join(&tmp);
+        //}
+      }
+    }
+  }
+}
+
+void WrappedRange::
+  WrappedPlus(WrappedRange *LHS,
+	      const WrappedRange *Op1, const WrappedRange *Op2){
+  
+  //  [a,b] + [c,d] = [a+c,b+d] if no overflow
+  //  top                       otherwise
+  if (IsWrappedOverflow_AddSub(Op1->getLB(),Op1->getUB(),
+			       Op2->getLB(),Op2->getUB())){
+    NumOfOverflows++;
+    LHS->makeTop();
+    return;
+  }
+  
+  // Addition in APInt performs modular arithmetic
+  LHS->setLB(Op1->getLB() + Op2->getLB());
+  LHS->setUB(Op1->getUB() + Op2->getUB());
+}
+
+void WrappedRange::
+  WrappedMinus(WrappedRange *LHS,
+	       const WrappedRange *Op1, const WrappedRange *Op2){
+		  
+    //  [a,b] - [c,d] = [a-d,b-c] if no overflow
+    //  top                       otherwise
+    if (IsWrappedOverflow_AddSub(Op1->getLB(),Op1->getUB(),
+				 Op2->getLB(),Op2->getUB())){
+      NumOfOverflows++;
+      LHS->makeTop();
+      return;
+    }
+    
+    /// minus in APInt performs modular arithmetic
+    LHS->setLB(Op1->getLB() - Op2->getUB());
+    LHS->setUB(Op1->getUB() - Op2->getLB());
+}      
+
+
 /// Perform the transfer function for binary arithmetic operations.
-AbstractValue* WrappedRange::visitArithBinaryOp(AbstractValue *V1,AbstractValue *V2,
-						unsigned OpCode, const char *OpCodeName){
+AbstractValue* WrappedRange::
+visitArithBinaryOp(AbstractValue *V1,AbstractValue *V2,
+		   unsigned OpCode, const char *OpCodeName){
   
   WrappedRange *Op1 = cast<WrappedRange>(V1);
   WrappedRange *Op2 = cast<WrappedRange>(V2);
@@ -1698,37 +2137,25 @@ AbstractValue* WrappedRange::visitArithBinaryOp(AbstractValue *V1,AbstractValue 
 
   switch (OpCode){
   case Instruction::Add:
+    WrappedPlus(LHS,Op1,Op2);
+    break;
   case Instruction::Sub:
-    //  [a,b] + [c,d] = [a+c,b+d] if Add and no overflow
-    //  [a,b] - [c,d] = [a-d,b-c] if Sub and no overflow
-    //  top                       otherwise
-    if (IsWrappedOverflow_AddSub(Op1->getLB(),Op1->getUB(),Op2->getLB(),Op2->getUB())){
-      NumOfOverflows++;
-      LHS->makeTop();
-      goto END;
-    }
-    
-    if (OpCode == Instruction::Add){
-      // Addition in APInt performs modular arithmetic
-      LHS->setLB(Op1->getLB() + Op2->getLB());
-      LHS->setUB(Op1->getUB() + Op2->getUB());
-    }
-    else{
-      /// Substraction in APInt performs modular arithmetic
-      LHS->setLB(Op1->getLB() - Op2->getUB());
-      LHS->setUB(Op1->getUB() - Op2->getLB());
-    }      
+    WrappedMinus(LHS,Op1,Op2);
     break;
   case Instruction::Mul:
     WrappedMultiplication(LHS, Op1, Op2);
     break;
   case Instruction::UDiv:
+    WrappedDivision(LHS, Op1, Op2, false);
+    break;
+  case Instruction::SDiv:
+    WrappedDivision(LHS, Op1, Op2, true);
+    break;
   case Instruction::URem:
-    WrappedDivisionAndRem(OpCode, LHS, Op1,Op2, false);
+    WrappedRem(LHS, Op1, Op2, false);
     break;
   case Instruction::SRem:
-  case Instruction::SDiv:
-    WrappedDivisionAndRem(OpCode, LHS, Op1, Op2, true);
+    WrappedRem(LHS, Op1, Op2, true);
     break;
   default:
     dbgs() << OpCodeName << "\n";
@@ -1742,36 +2169,40 @@ AbstractValue* WrappedRange::visitArithBinaryOp(AbstractValue *V1,AbstractValue 
   return LHS;
 }
 
-// We factorize code here because truncation and shift on the left use
-// this operation.
-bool Truncate(WrappedRange *&LHS, WrappedRange *Operand, unsigned k){
-
-  if (IsWrappedOverflow_Trunc(Operand,k)){
-    NumOfOverflows++;
-    LHS->makeTop();
-    return true;
-  }
+// Pre: Operand is not bottom
+// LHS is an in/out argument
+void Truncate(WrappedRange *&LHS, WrappedRange *Operand, unsigned k){
 
   APInt a= Operand->getLB();
   APInt b= Operand->getUB();
   assert(a.getBitWidth() == b.getBitWidth());
+  assert(k < a.getBitWidth());
 
-  //dbgs() << "Truncate to " << k << " bits.\n";
-  //dbgs() << "Width of a and b are: " << a.getBitWidth() << " and " << b.getBitWidth() << "\n";
-
-  if (k == a.getBitWidth()) return false;
-
-  // Not sure this is correct. It's different from the paper.
-  // We need to check if RHS->getUB() and RHS->getLB() agree on
-  // the most significant k bits. (Look at the paper for this)
-  LHS->setLB(a.trunc(k)); 	  
-  LHS->setUB(b.trunc(k)); 
-  return true;
+  if ( (a.ashr(k) == b.ashr(k)) && 
+       Lex_LessOrEqual(a.trunc(k),b.trunc(k))){
+    LHS->setLB(a.trunc(k)); 	  
+    LHS->setUB(b.trunc(k)); 
+  }
+  // APInt will wraparound if +1 overflow so == is modular arithmetic
+  else if ( (a.ashr(k)+1 == b.ashr(k)) &&  
+	    (!Lex_LessOrEqual(a.trunc(k),b.trunc(k)))){
+    LHS->setLB(a.trunc(k)); 	  
+    LHS->setUB(b.trunc(k)); 
+  }
+  else{
+    // Otherwise, top
+    NumOfOverflows++;
+    LHS->makeTop();
+  }
+#ifdef DEBUG_TRUNCATE
+  dbgs() << "trunc([" << a << "," << b << "]) = " << *LHS << "\n";
+#endif 
 }
  
 /// Perform the transfer function for casting operations.
-AbstractValue* WrappedRange::visitCast(Instruction &I, 
-				       AbstractValue * V, TBool *TB, bool){
+AbstractValue* WrappedRange::
+visitCast(Instruction &I, 
+	  AbstractValue * V, TBool *TB, bool){
 
   // Very special case: convert TBool to WrappedRange
   WrappedRange *RHS = NULL;
@@ -1799,7 +2230,9 @@ AbstractValue* WrappedRange::visitCast(Instruction &I,
   unsigned srcWidth,destWidth;  
   const Type * srcTy  =  I.getOperand(0)->getType();
   const Type * destTy =  I.getType();
-  BaseRange::checkCastingOp(srcTy, srcWidth, destTy, destWidth,I.getOpcode(),RHS->getWidth());
+  BaseRange::
+    checkCastingOp(srcTy, srcWidth, destTy, 
+		   destWidth,I.getOpcode(),RHS->getWidth());
   
   /// Start doing casting: change width
   LHS->setWidth(destWidth);        
@@ -1828,17 +2261,21 @@ AbstractValue* WrappedRange::visitCast(Instruction &I,
       Utilities::getIntegerWidth(I.getType(),k);
       // **SOUTH POLE SPLIT** and compute signed extension for each of
       // two elements and then lubbing them
-      std::vector<WrappedRange*> s = 
+      std::vector<WrappedRangePtr> s = 
 	ssplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
-      WrappedRange * Tmp = new WrappedRange(*LHS);
+      WrappedRange Tmp(*LHS);
       LHS->makeBot();  
-      for (std::vector<WrappedRange*>::iterator I=s.begin(), E=s.end(); I!=E; ++I){
-	APInt a = (*I)->getLB();
-	APInt b = (*I)->getUB();
-	Tmp->setLB(a.sext(k));
-	Tmp->setUB(b.sext(k));    
+      for (std::vector<WrappedRangePtr>::iterator 
+	     I=s.begin(), E=s.end(); I!=E; ++I){
+	APInt a = (*I).get()->getLB();
+	APInt b = (*I).get()->getUB();
+	Tmp.setLB(a.zext(k));
+	Tmp.setUB(b.zext(k));
+#ifdef  DEBUG_CAST
+	dbgs() << "ZExt([" << a << "," << b << "]," << k << ")=" << Tmp << "\n"; 
+#endif 	
 	// FIXME: we could use here GeneralizedJoin for more precision
-	LHS->join(Tmp);
+	LHS->join(&Tmp);
       }
     }
     break;
@@ -1848,17 +2285,21 @@ AbstractValue* WrappedRange::visitCast(Instruction &I,
       Utilities::getIntegerWidth(I.getType(),k);
       // **NORTH POLE SPLIT** and compute signed extension for each of
       // the two elements and then lubbing them
-      std::vector<WrappedRange*> s = 
+      std::vector<WrappedRangePtr> s = 
 	nsplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
-      WrappedRange * Tmp = new WrappedRange(*LHS);
+      WrappedRange Tmp(*LHS);
       LHS->makeBot();  
-      for (std::vector<WrappedRange*>::iterator I=s.begin(), E=s.end(); I!=E; ++I){
-	APInt a = (*I)->getLB();
-	APInt b = (*I)->getUB();
-	Tmp->setLB(a.sext(k));
-	Tmp->setUB(b.sext(k));    
+      typedef std::vector<WrappedRangePtr>::iterator It;
+      for (It I=s.begin(), E=s.end(); I!=E; ++I){
+	APInt a = (*I).get()->getLB();
+	APInt b = (*I).get()->getUB();
+	Tmp.setLB(a.sext(k));
+	Tmp.setUB(b.sext(k));    
+#ifdef  DEBUG_CAST
+	dbgs() << "SExt([" << a << "," <<  b << "]," << k << ")=" << Tmp << "\n"; 
+#endif 	
 	// FIXME: we could use here GeneralizedJoin for more precision
-	LHS->join(Tmp);
+	LHS->join(&Tmp);
       }
     }
     break;    
@@ -1866,9 +2307,8 @@ AbstractValue* WrappedRange::visitCast(Instruction &I,
     } // end switch
   
  END:
+  if (!V) delete RHS;
   LHS->normalizeTop();    
-  // if (!V)
-  //   delete RHS;
   DEBUG(dbgs() << "\t[RESULT]");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");      
@@ -1882,82 +2322,101 @@ void WrappedRange::WrappedLogicalBitwise(WrappedRange *LHS,
   // General case: **SOUTH POLE SPLIT** and compute operation for each
   // of the elements and then lubbing them
 
-  std::vector<WrappedRange*> s1 = 
+  std::vector<WrappedRangePtr> s1 = 
     ssplit(Op1->getLB(), Op1->getUB(), Op1->getLB().getBitWidth());
-  std::vector<WrappedRange*> s2 = 
+  std::vector<WrappedRangePtr> s2 = 
     ssplit(Op2->getLB(), Op2->getUB(), Op2->getLB().getBitWidth());
-  WrappedRange * Tmp = new WrappedRange(*LHS);
-  LHS->makeBot();  
-  for (std::vector<WrappedRange*>::iterator I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
-    for (std::vector<WrappedRange*>::iterator I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
+
+  LHS->makeBot(); 
+  typedef std::vector<WrappedRangePtr>::iterator It;
+  for (It I1 = s1.begin(), E1 =s1.end(); I1 != E1; ++I1){
+    for (It I2 = s2.begin(), E2 =s2.end(); I2 != E2; ++I2){
       switch(Opcode){
       case Instruction::Or:
-	//(*I1)->printRange(dbgs()); dbgs() << " or ";
-	//(*I2)->printRange(dbgs()); dbgs() << " = ";
-
-	// TODO: more base cases
-	if ((*I1)->IsZeroRange()){
-	  Tmp->RangeAssign((*I2));
+	{
+	  APInt lb; APInt ub;
+	  unimelb::unsignedOr((*I1).get(), (*I2).get(), lb, ub);
+	  WrappedRange Tmp(lb, ub, Op1->getLB().getBitWidth());
+#ifdef DEBUG_LOGICALBIT
+	  dbgs() << "OR(" << *((*I1).get()) << "," <<  *((*I2).get()) << ") = "
+		 << Tmp << "\n";
+#endif 
+	  // FIXME: we could use GeneralizedJoin to be more precise.
+	  LHS->join(&Tmp);
 	}
-	else if ((*I2)->IsZeroRange()){
-	  Tmp->RangeAssign((*I1));
-	}
-	else
-	  Tmp->unsignedOr(*I1,*I2);
-	//Tmp->printRange(dbgs()); dbgs() << "\n";
 	break;
       case Instruction::And:
-	//(*I1)->printRange(dbgs()); dbgs() << " and ";
-	//(*I2)->printRange(dbgs()); dbgs() << " = ";
-
-	if ((*I1)->IsZeroRange())
-	  Tmp->RangeAssign((*I1));
-	else if ((*I2)->IsZeroRange())
-	  Tmp->RangeAssign((*I2));
-	else
-	  Tmp->unsignedAnd(*I1,*I2);
-	//Tmp->printRange(dbgs()); dbgs() << "\n";
+	{
+	  APInt lb; APInt ub;
+	  unimelb::unsignedAnd((*I1).get(), (*I2).get(), lb, ub);
+	  WrappedRange Tmp(lb, ub, Op1->getLB().getBitWidth());
+#ifdef DEBUG_LOGICALBIT
+	  dbgs() << "AND(" << *((*I1).get()) << "," <<  *((*I2).get()) << ") = "
+		 << Tmp << "\n";
+#endif 
+	  // FIXME: we could use GeneralizedJoin to be more precise.
+	  LHS->join(&Tmp);
+	}
 	break;
       case Instruction::Xor:
-	//(*I1)->printRange(dbgs()); dbgs() << " xor ";
-	//(*I2)->printRange(dbgs()); dbgs() << " = ";
-	Tmp->unsignedXor(*I1,*I2);
-	//Tmp->printRange(dbgs()); dbgs() << "\n";
+	{
+	  APInt lb; APInt ub;
+	  unimelb::unsignedXor((*I1).get(),(*I2).get(), lb, ub);
+	  WrappedRange Tmp(lb,ub,Op1->getLB().getBitWidth());
+#ifdef DEBUG_LOGICALBIT
+	  dbgs() << "XOR(" << *((*I1).get()) << "," <<  *((*I2).get()) << ") = "
+		 << Tmp << "\n";
+#endif 
+	  // FIXME: we could use GeneralizedJoin to be more precise.
+	  LHS->join(&Tmp);
+	}
 	break;
       default:
 	assert(false && "Unexpected instruction");
       } // end switch
-      // FIXME: we could use GeneralizedJoin to be more precise.
-      LHS->join(Tmp);
+#ifdef DEBUG_LOGICALBIT
+      dbgs() << "After intermediate join: " << *LHS << "\n";
+#endif 
     }
   }
-  //dbgs() << "After lubbing "; LHS->print(dbgs()); dbgs() << "\n";
-  delete Tmp;
+#ifdef DEBUG_LOGICALBIT
+    dbgs() << "After lubbing "; LHS->print(dbgs()); dbgs() << "\n";
+#endif 
 }
 
-
-void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS, 
-					WrappedRange *Operand, WrappedRange *Shift,
-					unsigned Opcode){
-
+// Pre: Operand is not bottom
+void WrappedRange::
+WrappedBitwiseShifts(WrappedRange *LHS, 
+		     WrappedRange *Operand, WrappedRange *Shift,
+		     unsigned Opcode){
+  
   switch(Opcode){
   case Instruction::Shl:    
+    // The main idea of Shl is to check whether the lower w-k bits of
+    // the Operand are equal to the Operand. If yes, Shl can be done
+    // safely. Otherwise, we return the interval [0,1^{w-k}0^{k}]
     if (Shift->IsConstantRange()){
       APInt k = Shift->getUB();
       unsigned NumBitsSurviveShift = k.getBitWidth() - k.getZExtValue();
-      WrappedRange * Tmp = new WrappedRange(*Operand);
+      WrappedRange *Tmp = new WrappedRange(*Operand);
       Truncate(Tmp, Operand, NumBitsSurviveShift);
-      // Be careful: truncate will reduce the width of Tmp.  To
-      // compare with a and b we need to pad 0's so that all of them
-      // have the same width again.
-      APInt Tmp_lb(k.getBitWidth(), Tmp->getLB().getZExtValue(), false);
-      APInt Tmp_ub(k.getBitWidth(), Tmp->getUB().getZExtValue(), false);
-      APInt a = Operand->getLB();
-      APInt b = Operand->getUB();
-      assert(Tmp_lb.getBitWidth() == a.getBitWidth() && 
-	     Tmp_ub.getBitWidth() == b.getBitWidth());
-      //dbgs() << Tmp_lb << " -- " << Tmp_ub << " --- " << a << " --- " << b << "\n";
-      if (!Tmp->isBot() && !Tmp->IsTop() && (Tmp_lb == a) && (Tmp_ub == b)){
+      APInt a(Operand->getLB());
+      APInt b(Operand->getUB());
+      // Be careful: Truncate will reduce the width of Tmp.  To compare
+      // with a and b we need to pad 0's or 1's so that all of them have the
+      // same width again.
+      APInt c(k.getBitWidth(), Tmp->getLB().getSExtValue(), false);
+      APInt d(k.getBitWidth(), Tmp->getUB().getSExtValue(), false);
+      assert(a.getBitWidth() == c.getBitWidth() && 
+	     b.getBitWidth() == d.getBitWidth());
+#ifdef DEBUG_SHIFTS
+      dbgs() << "[" << a << "," << b << "] =? ";
+      dbgs() << "[" << c << "," << d << "]\n";
+      dbgs() << "BINARY \n";
+      dbgs() << "[" << a.toString(2,false) << "," << b.toString(2,false) << "] =?\n";
+      dbgs() << "[" << c.toString(2,false) << "," << d.toString(2,false) << "]\n";
+#endif 
+      if (!Tmp->IsTop() && (a == c) && (b == d)){
 	// At this point the shift will not through away relevant bits
 	// so it is safe to shift on the left.
 	LHS->setLB(a << k);
@@ -1967,12 +2426,17 @@ void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS,
 	// 000.......0
 	LHS->setLB(APInt::getNullValue(a.getBitWidth())); 
 	// 1111...0000 where the number of 1's is w-k.
-	LHS->setUB(APInt::getHighBitsSet(a.getBitWidth(), NumBitsSurviveShift-1));  
+	LHS->setUB(APInt::getHighBitsSet(a.getBitWidth(), NumBitsSurviveShift));  
       }
+#ifdef DEBUG_SHIFTS
+      dbgs() << "RESULT:" << *LHS << " BINARY: ";
+      dbgs () << "[" << LHS->getLB().toString(2,false) << "," 
+	      << LHS->getUB().toString(2,false) << "]\n";
+#endif 
       delete Tmp;
     }
     else{
-      // FIXME: NOT_IMPLEMENTED if the shift cannot be inferred as a
+      // FIXME: NOT_IMPLEMENTED. The shift cannot be inferred as a
       // constant at compile time
       LHS->makeTop();
     }
@@ -1983,7 +2447,7 @@ void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS,
       APInt a = Operand->getLB();
       APInt b = Operand->getUB();	
       /// If SOUTH POLE \in [a,b] then [0^w, 0^k 1^{w-k}]  (rule 1) 
-      /// otherwise [ a >>_l k, b >>_l k]                   (rule 2)
+      /// otherwise [ a >>_l k, b >>_l k]                  (rule 2)
       ///
       /// The range crosses the south pole.  E.g., if we shift
       /// logically two bits each bound of the range [0011,0001] to
@@ -1992,18 +2456,27 @@ void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS,
       /// shift logically two bits to the right. We would get 0011 !
       /// To cover this case we have rule 1.
       if (Operand->IsTop() || CrossSouthPole(a,b)){
+#ifdef DEBUG_SHIFTS
+	dbgs() << "The operand is crossing the south pole\n";
+#endif 
 	// 0.......0
 	LHS->setLB(APInt::getNullValue(a.getBitWidth()));
-	// 0..01...1 where the number of 1's is width-k
-	LHS->setUB(APInt::getLowBitsSet(a.getBitWidth(), a.getBitWidth() - k.getZExtValue())); 
+	// 0..01...1 where the number of 1's is w-k
+	LHS->setUB(APInt::getLowBitsSet(a.getBitWidth(), 
+					a.getBitWidth() - k.getZExtValue())); 
       }
       else{
 	LHS->setLB(a.lshr(k));
 	LHS->setUB(b.lshr(k));    
       }
+#ifdef DEBUG_SHIFTS
+      dbgs() << *LHS << "\n";
+      dbgs () << "[" << LHS->getLB().toString(2,false) << "," 
+	      << LHS->getUB().toString(2,false) << "]\n";
+#endif 
     }
     else{
-      // FIXME: NOT_IMPLEMENTED if shift cannot be inferred as a
+      // FIXME: NOT_IMPLEMENTED.  The shift cannot be inferred as a
       // constant at compile time.
       LHS->makeTop();
     }
@@ -2014,21 +2487,31 @@ void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS,
       APInt a = Operand->getLB();
       APInt b = Operand->getUB();	
       /// If NORTH POLE \in [a,b] then [1^{k}0^{w-k}, 0^k 1^{w-k}]  (rule 1) 
-      /// otherwise [ a >>_a k, b >>_a k]                           (rule 2)
+      /// otherwise                    [ a >>_a k, b >>_a k]        (rule 2)
       ///
       if (Operand->IsTop() || CrossNorthPole(a,b)){
+#ifdef DEBUG_SHIFTS
+	dbgs() << "The operand is crossing the north pole\n";
+#endif 
 	// lower bound is 1...10....0 where the number of 1's is k.
-	LHS->setLB(APInt::getHighBitsSet(a.getBitWidth(), k.getZExtValue()));  
-	// upper bound is 0..01...1 where the number of 1's is width-k
-	LHS->setUB(APInt::getLowBitsSet(b.getBitWidth(), b.getBitWidth() - k.getZExtValue()));    
+	LHS->setLB(APInt::getHighBitsSet(a.getBitWidth(), 
+					 k.getZExtValue()));  
+	// upper bound is 0..01...1 where the number of 1's is w-k
+	LHS->setUB(APInt::getLowBitsSet(b.getBitWidth(), 
+					b.getBitWidth() - k.getZExtValue()));    
       }
       else{
 	LHS->setLB(a.ashr(k));
 	LHS->setUB(b.ashr(k));    
       }
+#ifdef DEBUG_SHIFTS
+      dbgs() << *LHS << "\n";
+      dbgs () << "[" << LHS->getLB().toString(2,false) << "," 
+	      << LHS->getUB().toString(2,false) << "]\n";
+#endif 
     }
     else{
-      // FIXME: NOT_IMPLEMENTED if shift cannot be inferred as a
+      // FIXME: NOT_IMPLEMENTED. The shift cannot be inferred as a
       // constant at compile time.
       LHS->makeTop();
     }
@@ -2040,11 +2523,12 @@ void WrappedRange::WrappedBitwiseShifts(WrappedRange *LHS,
 
 
 /// Perform the transfer function for bitwise  operations. 
-AbstractValue* WrappedRange::visitBitwiseBinaryOp(AbstractValue * V1, 
-						  AbstractValue * V2, 
-						  const Type * Op1Ty, const Type * Op2Ty, 
-						  unsigned OpCode   , const char * OpCodeName){
-
+AbstractValue* WrappedRange::
+visitBitwiseBinaryOp(AbstractValue * V1, 
+		     AbstractValue * V2, 
+		     const Type * Op1Ty, const Type * Op2Ty, 
+		     unsigned OpCode   , const char * OpCodeName){
+  
   WrappedRange *Op1 = cast<WrappedRange>(V1);
   WrappedRange *Op2 = cast<WrappedRange>(V2);
   WrappedRange *LHS = new WrappedRange(*this);
@@ -2065,38 +2549,39 @@ AbstractValue* WrappedRange::visitBitwiseBinaryOp(AbstractValue * V1,
   case Instruction::Xor:
   case Instruction::Or:
     if (Op1->isBot() || Op2->isBot()){
-      LHS->makeBot();
+      LHS->makeTop(); // be conservative here
+      //LHS->makeBot();
       break;
     }
     /////////////////////////////////////////////////////////////////
     // Top is special for logical bitwise because we can go down in
-    // the lattice from it.
+    // the poset from it.
     /////////////////////////////////////////////////////////////////
     if (Op1->IsTop() && Op2->IsTop()){
       LHS->makeTop();
-      break;
     }      
-    if (Op1->IsTop()){
-      WrappedRange* Tmp = new WrappedRange(*Op1);
-      Tmp->resetTopFlag();
-
-      Tmp->setLB((uint64_t) 0);
-      Tmp->setUB(APInt::getMaxValue(Tmp->getWidth()));
-      WrappedLogicalBitwise(LHS, Tmp, Op2, OpCode);	  
-      delete Tmp;
-      break;
+    else if (Op1->IsTop()){
+      WrappedRange Tmp(*Op1);
+      Tmp.resetTopFlag();
+      Tmp.setLB((uint64_t) 0);
+      Tmp.setUB(APInt::getMaxValue(Tmp.getWidth()));
+#ifdef DEBUG_LOGICALBIT
+      dbgs() << "Operand 1 is top\n";
+#endif 
+      WrappedLogicalBitwise(LHS, &Tmp, Op2, OpCode);	  
     }      
-    if (Op2->IsTop()){
-      WrappedRange* Tmp = new WrappedRange(*Op2);
-      Tmp->resetTopFlag();
-
-      Tmp->setLB((uint64_t) 0);
-      Tmp->setUB(APInt::getMaxValue(Tmp->getWidth()));
-      WrappedLogicalBitwise(LHS, Op1, Tmp,  OpCode);	  
-      delete Tmp;
-      break;
+    else if (Op2->IsTop()){
+#ifdef DEBUG_LOGICALBIT
+      dbgs() << "Operand 2 is top\n";
+#endif 
+      WrappedRange Tmp(*Op2);
+      Tmp.resetTopFlag();
+      Tmp.setLB((uint64_t) 0);
+      Tmp.setUB(APInt::getMaxValue(Tmp.getWidth()));
+      WrappedLogicalBitwise(LHS, Op1, &Tmp,  OpCode);	  
     }      
-    WrappedLogicalBitwise(LHS, Op1, Op2, OpCode);
+    else 
+      WrappedLogicalBitwise(LHS, Op1, Op2, OpCode);
     break;
   case Instruction::Shl: 
   case Instruction::LShr: 
@@ -2111,6 +2596,12 @@ AbstractValue* WrappedRange::visitBitwiseBinaryOp(AbstractValue * V1,
       break;
     }
 
+    if (Op2->IsZeroRange()){
+      // If the shift is zero then the instruction is a non-op
+      LHS->RangeAssign(Op1);
+      break;
+    }
+    
     WrappedBitwiseShifts(LHS, Op1, Op2,OpCode);
     break;
   default:;
@@ -2122,6 +2613,48 @@ AbstractValue* WrappedRange::visitBitwiseBinaryOp(AbstractValue * V1,
   return LHS;  
 }
 
+// Tests
+
+// void test_GeneralizedJoin(){
+//   {
+//     APInt a(8,  2,false);  APInt b(8, 10,false);
+//     APInt c(8,120,false);  APInt d(8,130,false);
+//     APInt e(8,132,false);  APInt f(8,135,false);
+//     APInt zero(8,0,false); 
+//     // Temporary constructors
+//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
+//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
+//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
+//     std::vector<WrappedRange*> vv;
+//     vv.push_back(R3); vv.push_back(R2); vv.push_back(R1);
+//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
+//     Res->GeneralizedJoin(vv);
+//     // it should be [2,135]
+//     dbgs()<< "Result for test 1: " ;
+//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
+//   }
+
+//   {
+//     APInt a(8,  2,false);  APInt b(8, 10,false);
+//     APInt c(8,120,false);  APInt d(8,130,false);
+//     APInt e(8,132,false);  APInt f(8,135,false);
+//     APInt g(8,200,false);  APInt h(8,100,false);
+
+//     APInt zero(8,0,false); 
+//     // Temporary constructors
+//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
+//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
+//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
+//     WrappedRange * R4 = new WrappedRange(g,h,g.getBitWidth());
+//     std::vector<WrappedRange*> vv;
+//     vv.push_back(R3); vv.push_back(R4); vv.push_back(R2); vv.push_back(R1);
+//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
+//     Res->GeneralizedJoin(vv);
+//     // it should be [2,135]
+//     dbgs()<< "Result for test 2: " ;
+//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
+//   }
+// }
 
 
 				

@@ -39,9 +39,13 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Statistic.h"
 
-// #define DEBUG_TYPE "RangeAnalysis"
+#include <tr1/memory>
 
+#define DEBUG_TYPE "RangeAnalysis"
 namespace unimelb {
+
+  class Range;
+  typedef std::tr1::shared_ptr<Range>  RangePtr;
 
   /// Widening technique.
   typedef enum {NOWIDEN = 10, COUSOT76 = 11, JUMPSET = 12} WideningOpts;
@@ -52,33 +56,51 @@ namespace unimelb {
     virtual BaseId getValueID() const { return RangeId; }
 
     /// Constructor of the class.
-    Range(Value *V, bool IsSigned): BaseRange(V, IsSigned){}
+    /// Creates a new object from a Value.
+    Range(Value *V, bool IsSigned): 
+      BaseRange(V, IsSigned, true){
+      // FIXME: although the code is intended to support also unsigned
+      // intervals, we currently have many hooks that assume intervals
+      // are signed.
+      assert(IsSigned && "Intervals must be signed");
+    }
     
     /// Constructor of the class.
     /// Creates a new object from an integer constant.
     Range(const ConstantInt *C, unsigned Width, bool IsSigned): 
-    BaseRange(C,Width,IsSigned){ }
+      BaseRange(C, Width, IsSigned, true){ 
+      assert(IsSigned && "Intervals must be signed");
+    }
 
     /// Constructor of the class.
     /// Creates a new object from a TBool instance.
     Range(Value *V, TBool *B, bool IsSigned):
-      BaseRange(V,IsSigned){
-	if (B->isTrue()){
-	  setLB(1); setUB(1);
+      BaseRange(V, IsSigned, true){
+      assert(IsSigned && "Intervals must be signed");
+      if (B->isTrue()){
+	setLB(1); setUB(1);
+      }
+      else{
+	if (B->isFalse()){
+	  setLB(0); setUB(0);
 	}
 	else{
-	  if (B->isFalse()){
-	    setLB(0); setUB(0);
+	  // FIXME: we should say  [0,1]
+	  makeTop();
 	  }
-	  else{
-	    // FIXME: we should say  [0,1]
-	    makeTop();
-	  }
-	}
       }
+    }
     
     /// Copy constructor of the class.
-    Range(const Range& I ): BaseRange(I){ }
+    Range(const Range& other ): 
+      BaseRange(other){ }
+
+    /// Constructor of the class for APInt's 
+    /// For temporary computations.
+    Range(APInt lb, APInt ub, unsigned Width, bool IsSigned): 
+      BaseRange(lb,ub,Width,IsSigned,true){ 
+      assert(IsSigned && "Intervals must be signed");
+    }
     
     /// Clone method of the class.
     Range* clone(){
@@ -127,43 +149,90 @@ namespace unimelb {
       }
     }
 
-
-    // Abstract operations.
+    // Standard abstract operations.
+    virtual bool isGammaSingleton() const;
     virtual bool isBot() const;
     virtual bool IsTop() const;
     virtual void makeBot();
     virtual void makeTop();
     virtual bool lessOrEqual(AbstractValue * V);
     virtual void join(AbstractValue *V);
+    virtual void GeneralizedJoin(std::vector<AbstractValue *>){
+      assert(false && "This is a lattice so this method should not be called");
+    }
+
     virtual void meet(AbstractValue *V1,AbstractValue *V2);
     virtual bool isEqual(AbstractValue *V);
-    virtual void widening(AbstractValue *, const SmallPtrSet<ConstantInt*, 16>); 
-			  
+    virtual void widening(AbstractValue *, const ConstantSetTy &); 
+		
+    /// Return true is this is syntactically identical to V.
+    virtual bool isIdentical(AbstractValue *V);
+
+  private:	  
     // Methods to evaluate a guard.
     virtual bool comparisonSle(AbstractValue *);
     virtual bool comparisonSlt(AbstractValue *);
     virtual bool comparisonUle(AbstractValue *);
     virtual bool comparisonUlt(AbstractValue *);
 
+    // Methods to improve bounds from conditionals
     virtual void filterSigma(unsigned, AbstractValue*,AbstractValue*);
     void filterSigma_TwoVars(unsigned, Range*,Range*);
     void filterSigma_VarAndConst(unsigned, Range*,Range*);
 
+    /////
     // Abstract domain-dependent transfer functions 
+    /////
 
     // addition, substraction, multiplication, signed/unsigned
-    // division, signed/unsigned rem.
+    // division, and signed/unsigned rem.
     virtual AbstractValue* visitArithBinaryOp(AbstractValue *, AbstractValue *,
 					      unsigned, const char *);
+    void DoArithBinaryOp(Range *,Range *,Range *,unsigned,const char *,bool &);
+    void DoMultiplication(bool, Range *,Range *,Range *,bool &);
+    void DoDivision(bool, Range *, Range *, Range *,bool &);
+    void DoRem(bool, Range *, Range *, Range *,bool &);
+			 
     // and, or, xor, lsh, lshr, ashr
-    virtual AbstractValue* visitBitwiseBinaryOp(AbstractValue *,AbstractValue *, 
-						const Type *,const Type *,unsigned, const char *);
-    // truncate and signed/unsigned extension
-    virtual AbstractValue* visitCast(Instruction &, AbstractValue *, TBool*, bool);
+    virtual AbstractValue* 
+      visitBitwiseBinaryOp(AbstractValue *,AbstractValue *, 
+			   const Type *,const Type *,unsigned, const char *);    
+    void DoBitwiseBinaryOp(Range *,Range *,Range *,const Type *,const Type *,unsigned,bool &);
+    void DoBitwiseShifts(Range *, Range *, Range *,unsigned, bool &);
+    void DoLogicalBitwise(Range *, Range *, Range *,unsigned);
+    void signedOr(Range *  , Range*);
+    void signedAnd(Range * , Range*);
+    void signedXor(Range * , Range*);
 
-    // virtual bool countForStats() const;
-      
+    // cast  instructions: truncate and signed/unsigned extension
+
+    bool IsTruncateOverflow(Range *, unsigned);
+    virtual AbstractValue* visitCast(Instruction &,AbstractValue *,TBool*,bool);
+    void DoCast(Range *,Range *,const Type *,const Type *,const unsigned,bool &);
+
+    bool isCrossingSouthPole(Range *);
+    bool isCrossingNorthPole(Range *);
+
+    bool comparisonUnsignedLessThan(Range *, Range *, bool);
+
+    inline bool comparisonUleDoNotCrossSP(const APInt &a, const APInt &b, 
+					  const APInt &c, const APInt &d){
+      // [a,b] <= [c,d] if a <= d
+      return a.ule(d);
+    }
+    
+    inline bool comparisonUltDoNotCrossSP(const APInt &a, const APInt &b, 
+					  const APInt &c, const APInt &d){
+      // [a,b] < [c,d] if a <  d
+      return a.ult(d);
+    }
+    
   };
+
+  inline raw_ostream& operator<<(raw_ostream& o, Range r) {
+    r.printRange(o);
+    return o;
+  }
 
 } // End llvm namespace
 

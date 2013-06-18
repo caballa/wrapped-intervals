@@ -7,8 +7,8 @@
 /// \file BaseRange.h
 /// Generic class for range (interval) analyses.
 ///
-/// This file contains common code for the derived classes Range and
-/// WrappedRange.
+/// This file contains common methods and attributes for the derived
+/// classes Range and WrappedRange.
 /// 
 /// LLVM IR does not tag variables with signedness information. It
 /// makes use of the two's complement representation, having the
@@ -64,7 +64,8 @@ namespace unimelb {
     bool __isTop;    //!< Arithmetic operations cannot modified the interval if true.
     public:      
     // Constructor
-    BaseRange(Value *V, bool IsSigned):  AbstractValue(V) ,__isTop(true)
+    BaseRange(Value *V, bool IsSigned, bool isLattice):  
+      AbstractValue(V,isLattice) ,__isTop(true)
     {     
       isSigned = IsSigned;  
       unsigned Width = 0;
@@ -75,22 +76,16 @@ namespace unimelb {
       if (isSigned){
 	setLB(APInt::getSignedMinValue(width));
 	setUB(APInt::getSignedMaxValue(width));	 
-	// Change 09/10/12
-	/* setLB(APInt::getSignedMaxValue(width)); */
-	/* setUB(APInt::getSignedMinValue(width)); */
       }
       else{
 	setLB(APInt::getMinValue(width));
 	setUB(APInt::getMaxValue(width));	 
-	// Change 09/10/12
-	/* setLB(APInt::getMaxValue(width)); */
-	/* setUB(APInt::getMinValue(width)); */
       }	
     }
       
     // Constructor for an integer constant
-    BaseRange(const ConstantInt *C,unsigned Width, bool IsSigned): 
-    AbstractValue(), __isTop(false){
+    BaseRange(const ConstantInt *C,unsigned Width, bool IsSigned, bool isLattice): 
+    AbstractValue(isLattice), __isTop(false){
       isSigned = IsSigned; 
       width = Width;
       setLB(C->getValue());
@@ -98,8 +93,8 @@ namespace unimelb {
     }
 
     // Constructor for an integer constant
-    BaseRange(APInt c,unsigned Width, bool IsSigned): 
-    AbstractValue(),__isTop(false){
+    BaseRange(APInt c,unsigned Width, bool IsSigned, bool isLattice): 
+    AbstractValue(isLattice),__isTop(false){
       isSigned = IsSigned; 
       width = Width;
       setLB(c);
@@ -107,8 +102,8 @@ namespace unimelb {
     }
 
     // Constructor for APInt's (this is only for temporary results!)
-    BaseRange(APInt lb, APInt ub, unsigned Width, bool IsSigned): 
-    AbstractValue(),__isTop(false){
+    BaseRange(APInt lb, APInt ub, unsigned Width, bool IsSigned, bool isLattice): 
+    AbstractValue(isLattice),__isTop(false){
       isSigned = IsSigned; 
       width = Width;
       setLB(lb);
@@ -135,15 +130,15 @@ namespace unimelb {
     inline APInt getLB() const{ return LB;}
 
     inline unsigned getWidth(){ return width;}
-    inline bool IsSigned()    { return isSigned;}
+    inline bool IsSigned() const { return isSigned;}
 
-    inline bool IsConstantRange(){
+    inline bool IsConstantRange() const{
       if (isBot()) return false;
       if (IsTop()) return false;
       return (getLB() == getUB());
     }
 
-    inline bool IsZeroRange(){
+    inline bool IsZeroRange() const{
       if (IsConstantRange()){
 	return (getLB() == 0);
       }
@@ -166,7 +161,7 @@ namespace unimelb {
       else
     	return APInt::getMinValue(width);
     }
-    static inline bool IsSignedCompInst(unsigned Opcode){
+    static inline bool IsSignedCompInst(unsigned Opcode) {
       switch(Opcode){
       case ICmpInst::ICMP_SLE:
       case ICmpInst::ICMP_SLT:	
@@ -235,46 +230,21 @@ namespace unimelb {
       __isTop=false;
     }
 
-    /// Return true is the element is bottom.
-    virtual bool isBot() const;
     /// Return true is the element is top.
     virtual bool IsTop() const;
-    /// Make bottom the element.
-    virtual void makeBot();
     /// Make top the element.
     virtual void makeTop();
-    /// Return true is this is less or equal than V.
-    virtual bool lessOrEqual(AbstractValue *V);
-    /// Return true is this is equal to V.
-    virtual bool isEqual(AbstractValue *V);
-    /// Join this and V and the result is stored in this.
-    virtual void join(AbstractValue *V);
-    /// Meet V1 and V2 and the result is stored in this.
-    virtual void meet(AbstractValue *V1, AbstractValue *V2);
     /// Print the abstract element.
     virtual void print(raw_ostream &) const;
 
-    /// Execute the arithmetic operation.
-    void BasicArithBinaryOp(BaseRange*, 
-			    BaseRange*, BaseRange*,
-			    unsigned, const char *, bool&);
-    /// Execute the cast instruction.
-    void BasicCast(BaseRange *, BaseRange *, 
-    		   const Type *, const Type *, const unsigned, bool &);
-    /// Execute the bitwise operation.
-    void BasicBitwiseBinaryOp(BaseRange *, 
-			      BaseRange *, BaseRange *, 
-			      const Type *, const Type *, unsigned, bool &);
-
-
     // Common operations in derived classes.
+
+    /// Return true is this is syntactically identical to V.
+    virtual bool isIdentical(AbstractValue *V);
 
     /// Print an interval.
     void printRange(raw_ostream &) const;
-
-    /// Check if truncate produces overflow.
-    bool  IsTruncateOverflow(BaseRange *, unsigned);
-      
+          
     /// Return true if the signed intervals [lb1,ub1]
     /// and [lb2,ub2] are disjoint.
     static bool signedIsDisjoint(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
@@ -378,45 +348,33 @@ namespace unimelb {
       assert(false && "uncovered case in bridge_IsIncluded");
     }
 
-    /// Apply widening using jump-set heuristics.
-    void wideningJump(BaseRange *Current,
-		      const SmallPtrSet<ConstantInt*, 16>  JumpSet,
-		      APInt &lb, APInt &ub);
     /// Return false if some error condition with bitwise shift
     /// operations.
     bool checkOpWithShift(BaseRange *, BaseRange *);
     /// To check error conditions with casting operations.
-    void checkCastingOp(const Type *,unsigned &,const Type *,unsigned &,const unsigned,unsigned);      
-    // arithmetic operations 
-    void Mult_GeneralCase(bool,
-			  BaseRange *, 
-			  BaseRange *, BaseRange *, bool &);
-    void UDivRem_GeneralCase(unsigned,
-			     BaseRange *, BaseRange *, BaseRange *);
-    void DivRem_GeneralCase(unsigned,
-			    BaseRange *, BaseRange *, BaseRange *,
-			    bool &);
-    // bitwise operations 
-    void BasicBitwiseShifts(BaseRange *, 
-			    BaseRange *, BaseRange *,unsigned, bool &);
-    void BasicLogicalBitwise(BaseRange *, BaseRange *, BaseRange *,unsigned);
+    void checkCastingOp(const Type *,unsigned &,const Type *,unsigned &,
+			const unsigned,unsigned);      
 
+    // comparison operations 
     static APInt smin(APInt x, APInt y) { return x.slt(y) ? x : y;}
     static APInt smax(APInt x, APInt y) { return x.sgt(y) ? x : y;}
     static APInt umin(APInt x, APInt y) { return x.ult(y) ? x : y;}
     static APInt umax(APInt x, APInt y) { return x.ugt(y) ? x : y;}    
 
-    void unsignedOr(BaseRange *Op1, BaseRange *Op2);
-    void unsignedAnd(BaseRange *Op1, BaseRange *Op2);
-    void unsignedXor(BaseRange *Op1, BaseRange *Op2);
-    void signedOr(BaseRange *Op1, BaseRange *Op2);
-    void signedAnd(BaseRange *Op1, BaseRange *Op2);
-    void signedXor(BaseRange *Op1, BaseRange *Op2);
-
-    // for comparison with other domains
-    // bool nearTop(APInt k);
   };
 
+  // bitwise operations 
+  APInt minOr( APInt, APInt, APInt, APInt);
+  APInt maxOr( APInt, APInt, APInt, APInt);
+  APInt minAnd(APInt, APInt, APInt, APInt);
+  APInt maxAnd(APInt, APInt, APInt, APInt);
+  APInt minXor(APInt, APInt, APInt, APInt);
+  APInt maxXor(APInt, APInt, APInt, APInt);
+
+  void unsignedOr(BaseRange  *, BaseRange *,APInt &lb, APInt &ub); 
+  void unsignedAnd(BaseRange *, BaseRange *,APInt &lb, APInt &ub); 
+  void unsignedXor(BaseRange *, BaseRange *,APInt &lb, APInt &ub);
+		      
 } // End llvm namespace
 
 #endif

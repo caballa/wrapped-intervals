@@ -25,8 +25,8 @@ STATISTIC(NumOfUnreachable   ,"Number of unreachable blocks");
 
 /// Debugging methods
 void printValueInfo(Value *,Function*);
-void printIntConstants(SmallPtrSet<ConstantInt*, 16>);
-void printUsersInst(Value *,SmallPtrSet<BasicBlock*, 16>,bool, DenseMap<Value*, filter_users *>);
+void printUsersInst(Value *,SmallPtrSet<BasicBlock*, 16>,bool, 
+		    DenseMap<Value*, filter_users *>);
 void printTrackedRecursiveFunctions(SmallPtrSet<Function*, 16>);
 void printFilterUsers(DenseMap<Value*,filter_users*>);
 inline void PRINTCALLER(std::string s){ /* dbgs() << s << "\n";*/ }
@@ -76,7 +76,8 @@ bool IsBooleanLogicalOperator(Instruction *I){
 }
 
 
-Fixpoint::Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA):
+Fixpoint::
+Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA):
   M(M),
   AA(AA),
   WideningLimit(WL),
@@ -96,7 +97,9 @@ Fixpoint::Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA):
   // T7= new Timer("Mark Executable Block "             ,*TG);
 }
 
-Fixpoint::Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA, bool isSigned):
+Fixpoint::
+Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA, 
+	 bool isSigned):
   M(M),
   AA(AA),
   WideningLimit(WL),
@@ -119,7 +122,8 @@ Fixpoint::Fixpoint(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA, bool 
 
 Fixpoint::~Fixpoint(){
 
-  for(DenseMap<BasicBlock*, AbstractBlock*>::iterator I = BasicBlockToAbstractBlock.begin(),
+  for(DenseMap<BasicBlock*, AbstractBlock*>::iterator 
+	I = BasicBlockToAbstractBlock.begin(),
 	E = BasicBlockToAbstractBlock.end(); I!=E; ++I){
     delete I->second;
   }
@@ -129,17 +133,20 @@ Fixpoint::~Fixpoint(){
     delete I->second;
   }
 
-  for(DenseMap<Value*, filter_users *>::iterator I = TrackedFilterUsers.begin(),
+  for(DenseMap<Value*, filter_users *>::iterator 
+	I = TrackedFilterUsers.begin(),
 	E = TrackedFilterUsers.end(); I!=E; ++I){
     delete I->second;
   }
 
-  for(DenseMap<Value*, AbstractValue*>::iterator I = ConstValMap.begin(),
+  for(DenseMap<Value*, AbstractValue*>::iterator 
+	I = ConstValMap.begin(),
 	E = ConstValMap.end(); I!=E; ++I){
     delete I->second;
   }
 
-  for(DenseMap<Value*, AbstractValue*>::iterator I = GlobalValMap.begin(),
+  for(DenseMap<Value*, AbstractValue*>::iterator 
+	I = GlobalValMap.begin(),
 	E = GlobalValMap.end(); I!=E; ++I){
     delete I->second;
   }
@@ -162,7 +169,8 @@ void Fixpoint::init(Function *F, DominatorTree *DT){
 
   if (Utilities::IsTrackableFunction(F)){
     // Iterate over all formal parameters
-    for (Function::arg_iterator argIt = F->arg_begin(), E=F->arg_end(); argIt != E; argIt++) {
+    for (Function::arg_iterator argIt = 
+	   F->arg_begin(), E=F->arg_end(); argIt != E; argIt++) {
       DEBUG(printValueInfo(argIt,F));
       if (isCondFlag(argIt)){
 	DEBUG(dbgs() << "\trecording a Boolean flag:" << argIt->getName() << "\n");
@@ -192,7 +200,13 @@ void Fixpoint::init(Function *F, DominatorTree *DT){
     // Dominator tree for the function
     DTs.insert(std::make_pair(F,DT));
     // Create an abstract value for each integer constant in the program
-    addTrackedIntegerConstants(F); 
+    std::vector<std::pair<Value*,ConstantInt*> > NewAbsVals;
+    Utilities::addTrackedIntegerConstants(F, IsAllSigned, 
+					  ConstSet, NewAbsVals); 
+    for (unsigned int i=0; i<NewAbsVals.size(); i++){
+      ConstValMap.insert(std::make_pair(NewAbsVals[i].first,
+					initAbsIntConstant(NewAbsVals[i].second)));   
+    }
     // Record widening points
     addTrackedWideningPoints(F);      
   }
@@ -211,7 +225,8 @@ void Fixpoint::solve(Function *F){
 ///  Cleanup some datastructures that still keep information from the
 ///  last analysis of the same function.
 void Fixpoint::cleanupPreviousFunctionAnalysis(Function *F){
-  DEBUG(dbgs() << "Cleanup previous analysis of the function: " << F->getName() << "\n");
+  DEBUG(dbgs() << "Cleanup previous analysis of the function: " 
+	<< F->getName() << "\n");
 
   // To see the content of BBExecutable
   // DEBUG(dbgs() << "BBExecutable={");
@@ -245,9 +260,10 @@ void Fixpoint::cleanupPreviousFunctionAnalysis(Function *F){
     Edge e = *IF;
     if (e.first->getParent() == F){
       DEBUG(dbgs() << "Erase from KnownFeasibleEdges: " 
-	           <<  e.first->getParent()->getName() << "." << e.first->getName() 
-	           << " --> " 
-	           <<  e.second->getParent()->getName() << "." << e.second->getName() << "\n");
+	           <<  e.first->getParent()->getName() << "." 
+	           << e.first->getName() << " --> "  
+	           <<  e.second->getParent()->getName() << "." 
+	           << e.second->getName() << "\n");
       KnownFeasibleEdges.erase(e);
     }
   }
@@ -285,12 +301,14 @@ void Fixpoint::computeFixpo(){
       DEBUG(dbgs() << "\n*** Popped off I-WL: " << *I << "\n");      
       DEBUG(printUsersInst(I,BBExecutable,true,TrackedFilterUsers));
       // T1->startTimer();
-      for (Value::use_iterator UI = I->use_begin(), E = I->use_end(); UI != E; ++UI) {
+      for (Value::use_iterator UI = 
+	     I->use_begin(), E = I->use_end(); UI != E; ++UI) {
         Instruction *U = cast<Instruction>(*UI);
 	// We check that the instruction U is defined in an executable
 	// block
         if (BBExecutable.count(U->getParent()) && U != I) {
-	  DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of " << *I << "\n");      
+	  DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of " 
+		       << *I << "\n");      
           visitInst(*U);
 	}
       } // end for
@@ -303,7 +321,8 @@ void Fixpoint::computeFixpo(){
 	assert(Inst && "This should not happen");
 	AbstractBlock * AbsBlock = BasicBlockToAbstractBlock[Inst->getParent()]; 
 	assert(AbsBlock && "This should not happen");
-      	for(filter_users::iterator UI = Users->begin(),UE = Users->end() ; UI != UE; ++UI){
+      	for(filter_users::iterator 
+	      UI = Users->begin(),UE = Users->end() ; UI != UE; ++UI){
 	  // Believe it or not we can have instructions where types do
 	  // not match (e.g, t5-a.c):
 	  //
@@ -315,15 +334,19 @@ void Fixpoint::computeFixpo(){
 	  // mismatch. Therefore, we will lose precision.
       	  if (Instruction * U = dyn_cast<Instruction>(*UI)){
 	    if (BBExecutable.count(U->getParent())) {
-	      DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of filter " << *I << "\n");
+	      DEBUG(dbgs() << "\n***Visiting: " << *U << " as user of filter " 
+		           << *I << "\n");
 	      notifyUser(I, Inst->getParent(), AbsBlock, U);
 	      visitInst(*U);
 	      // Moreover, we need to visit the users of the users of
 	      // the filter.
-	      for(Value::use_iterator UI2 = U->use_begin(), E2 = U->use_end(); UI2 != E2; ++UI2) {
+	      for(Value::use_iterator 
+		    UI2 = U->use_begin(), E2 = U->use_end(); 
+		  UI2 != E2; ++UI2) {
 		Instruction * U2 = cast<Instruction>(*UI2);
 		if (BBExecutable.count(U2->getParent())) {
-		  DEBUG(dbgs() << "\n***Visiting: " << *U2 << " as user of filter " << *U << "\n");
+		  DEBUG(dbgs() << "\n***Visiting: " << *U2 
+			       << " as user of filter " << *U << "\n");
 		  notifyUser(U, Inst->getParent(), AbsBlock, U2);
 		  visitInst(*U2);
 		}
@@ -382,8 +405,10 @@ void Fixpoint::computeOneNarrowingIter(Function *F){
 	 DFE = df_end(&F->getEntryBlock()); DFI != DFE; ++DFI) {   
     BasicBlock * BB = *DFI;
     if (BBExecutable.count(BB)){
-      for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
+      for (BasicBlock::iterator 
+	     I = BB->begin(), E = BB->end(); I != E; ++I){
 	visitInst(*I);
+      }
     }
   }
 }
@@ -412,7 +437,8 @@ void Fixpoint::markBlockExecutable(BasicBlock *B) {
   BBExecutable.insert(B);   // Basic block is executable  
   BBWorkList.insert(B);     // Add the block to the work list
   //T7->startTimer();
-  DenseMap<BasicBlock*,AbstractBlock*>::iterator I = BasicBlockToAbstractBlock.find(B);  
+  DenseMap<BasicBlock*,AbstractBlock*>::iterator I = 
+    BasicBlockToAbstractBlock.find(B);  
   if (I == BasicBlockToAbstractBlock.end()){
     // We initialize all values with top!        
     //  SmallPtrSet<Value *, 32> Variables = env->getEnv(B);
@@ -459,7 +485,8 @@ void Fixpoint::markEdgeExecutable(BasicBlock *Source, BasicBlock *Dest) {
 ///  fixpoint iteration (e.g., the first one) which is usually
 ///  important for precision of the analysis.
 bool Fixpoint::isEdgeFeasible(BasicBlock *From, BasicBlock *To){
-  std::set<Edge>::iterator I =  KnownFeasibleEdges.find(std::make_pair(From,To));  
+  std::set<Edge>::iterator I =  
+    KnownFeasibleEdges.find(std::make_pair(From,To));  
   if (I != KnownFeasibleEdges.end()) 
     return true;
   else{
@@ -491,20 +518,21 @@ void Fixpoint::updateState(Instruction &Inst   , MapValToAbstractTy &ValMap,
     DEBUG(dbgs() << " to " );
     DEBUG(NewV->print(dbgs()));
     DEBUG(dbgs() << "\n" );
-    ///////////////////////////////////////////////////////////////////////////////
-    // For lubbing all possible values in case of interprocedural ///////////////
+    /////////////////////////////////////////////////////////////////
+    // For lubbing all possible values in case of interprocedural ///
     // NewV->join(OldV);
-    ///////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////
     ValMap[&Inst] = NewV;
   }
   else{
-    //////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////
     // Widening:
     //             bottom         if n=0
-    // f^{n}_{w} = f^{n-1}_{w}    if n>0 and f(f^{n-1}_{w}) \subseteq f^{n-1}_{w}
+    // f^{n}_{w} = f^{n-1}_{w}    if n>0 and 
+    //                            f(f^{n-1}_{w}) \subseteq f^{n-1}_{w}
     //             widening(f^{n-1}_{w},f(f^{n-1}_{w})) otherwise
     // Here OldV = f^{n-1}_{w} and NewV = f(f^{n-1}_{w})
-    //////////////////////////////////////////////////////////////////////////////      
+    /////////////////////////////////////////////////////////////////
     
     if (/*NewV->lessOrEqual(OldV)*/ NewV->isEqual(OldV)){
       DEBUG(dbgs() << "\nThere is no change\n");
@@ -522,10 +550,10 @@ void Fixpoint::updateState(Instruction &Inst   , MapValToAbstractTy &ValMap,
       NewV->resetNumOfChanges();
     }
 
-    ///////////////////////////////////////////////////////////////////////////////
-    // For lubbing all possible values in case of interprocedural ///////////////
+    /////////////////////////////////////////////////////////////////
+    // For lubbing all possible values in case of interprocedural ///
     // NewV->join(OldV);
-    ///////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////
     ValMap[&Inst] = NewV;
     DEBUG(dbgs() << "***Added into I-WL: " << Inst << "\n");
     InstWorkList.insert(&Inst);
@@ -535,9 +563,11 @@ void Fixpoint::updateState(Instruction &Inst   , MapValToAbstractTy &ValMap,
   AbstractBlock * AbsBlock = BasicBlockToAbstractBlock[Inst.getParent()] ; 
   AbsBlock->updateValMap(ValMap);
   Value * I = cast<Value>(&Inst);
-  for (Value::use_iterator UI = I->use_begin(), E = I->use_end(); UI != E; ++UI) {
+  for (Value::use_iterator 
+	 UI = I->use_begin(), E = I->use_end(); UI != E; ++UI) {
     Instruction *U = cast<Instruction>(*UI);
-    if (BBExecutable.count(U->getParent()) && U != I && (U->getParent() != Inst.getParent())) 
+    if (BBExecutable.count(U->getParent()) && U != I && 
+	                   (U->getParent() != Inst.getParent())) 
       notifyUser(I, Inst.getParent(), AbsBlock, U);
   }
   // T6->stopTimer();
@@ -545,7 +575,8 @@ void Fixpoint::updateState(Instruction &Inst   , MapValToAbstractTy &ValMap,
 
 /// U is an user of V that lives in B but U may lives in another
 /// block.  Propagate the changes occurred in V to U.
-void Fixpoint::notifyUser(Value *V, BasicBlock* B, AbstractBlock *AbsB, Instruction* U){
+void Fixpoint::
+notifyUser(Value *V, BasicBlock* B, AbstractBlock *AbsB, Instruction* U){
 
   if (AbstractBlock * UserAbsBlock  = BasicBlockToAbstractBlock[U->getParent()]){	
     keepConsistentMaps(B, AbsB, U->getParent(), UserAbsBlock, V);
@@ -572,8 +603,10 @@ void Fixpoint::keepConsistentMaps(BasicBlock * FromB, AbstractBlock *FromAbsB,
 				  Value *V){
   if (FromB == ToB) return;
 
-  DEBUG(dbgs() << "Propagating " << FromB->getName() << "#" << V->getName() << " to "
-	<< ToB->getName() << "#" << V->getName() << "\n");
+  DEBUG(dbgs() << "Propagating " << FromB->getName() << "#" 
+	<< V->getName() << " to " << ToB->getName() << "#" 
+	<< V->getName() << "\n");
+	
   
   // 1st key step: keep consistent maps across blocks.
   // AbstractBlock * ToAbsB  = BasicBlockToAbstractBlock[ToB];
@@ -630,7 +663,8 @@ void Fixpoint::propagatePredecessors(BasicBlock *Curr){
 	    << (*P)->getName() << " to " << Curr->getName() << "\n");	       
       
       SmallPtrSet<AbstractValue*,32> CandidatesToFilter;
-      for (MapValToAbstractTy::iterator I = CurrMap.begin(), E= CurrMap.end(); I!=E; ++I){
+      for (MapValToAbstractTy::iterator 
+	     I = CurrMap.begin(), E= CurrMap.end(); I!=E; ++I){
 	AbstractValue *PredAbsV = PredMap[(*I).first]; 
 	if (!PredAbsV){
 	  // FIXME: not sure if this is normal behavior but it can
@@ -650,7 +684,8 @@ void Fixpoint::propagatePredecessors(BasicBlock *Curr){
 	//   observed this may be one of the causes.
 	if (!PredAbsV->isBot()) {	  
 	  DEBUG(dbgs() << "\tpropagating " << PredAbsV->getValue()->getName() 
-		       << "  from " << (*P)->getName() << " to " << Curr->getName() << "\n");	       
+		       << "  from " << (*P)->getName() << " to "
+		       << Curr->getName() << "\n");	       
 	  CurrAbsV->join(PredAbsV);
 	  CandidatesToFilter.insert(CurrAbsV);
 	}	
@@ -686,17 +721,20 @@ void Fixpoint::generateFilters(BasicBlock * B, BasicBlock *Predec){
 	// If it is not of the type and width that we can track then
 	// no bother
 	if (Utilities::getIntegerWidth(CI->getType(),width))
-	  AbsB->visitInstrToFilter(BI,CI, DTs[B->getParent()], DTCache, TrackedFilterUsers);
+	  AbsB->visitInstrToFilter(BI,CI, DTs[B->getParent()], 
+				   DTCache, TrackedFilterUsers);
       }
       else if (SelectInst * SI = dyn_cast<SelectInst>(BI->getCondition())){
 	// If it is not of the type and width that we can track then
 	// no bother
 	if (Utilities::getIntegerWidth(SI->getType(),width))
-	  AbsB->visitInstrToFilter(BI, SI, DTs[B->getParent()], DTCache, TrackedFilterUsers);
+	  AbsB->visitInstrToFilter(BI, SI, DTs[B->getParent()], 
+				   DTCache, TrackedFilterUsers);
       }
       else if (IsBooleanLogicalOperator(dyn_cast<Instruction>(BI->getCondition()))){
 	AbsB->visitInstrToFilter(BI, cast<Instruction>(BI->getCondition()), 
-				 TrackedCondFlags, DTs[B->getParent()], DTCache, TrackedFilterUsers); 
+				 TrackedCondFlags, DTs[B->getParent()], 
+				 DTCache, TrackedFilterUsers); 
       }
       else if (PHINode *PHI = dyn_cast<PHINode>(BI->getCondition())){
 #ifdef  WARNINGS
@@ -769,11 +807,14 @@ void Fixpoint::evalFilter(AbstractValue * &AbsV,
   FiltersTy::const_iterator I = filters.find(V);
   if (I != filters.end()){
     BinaryConstraintSetTy * Rhs = I->second;
-    for (BinaryConstraintSetTy::iterator II=Rhs->begin(), EE=Rhs->end(); II!=EE; ++II){
+    for (BinaryConstraintSetTy::iterator 
+	   II=Rhs->begin(), EE=Rhs->end(); II!=EE; ++II){
       BinaryConstraint *C = *II;
-      DEBUG(dbgs() << "\tEvaluating filter constraints: "; C->print();  dbgs() << "\n");
+      DEBUG(dbgs() << "\tEvaluating filter constraints: "; 
+	    C->print();  dbgs() << "\n");
       normalizeConstraint(C,V);
-      DEBUG(dbgs() << "\tAfter normalization          : "; C->print();  dbgs() << "\n");
+      DEBUG(dbgs() << "\tAfter normalization          : "; 
+	    C->print();  dbgs() << "\n");
       AbstractValue * Op1 = Lookup(valMap, C->getOperand(0), true);
       AbstractValue * Op2 = Lookup(valMap, C->getOperand(1), true);
       unsigned pred       = C->getPred();
@@ -854,7 +895,8 @@ void Fixpoint::visitInst(Instruction &I) {
 	  AbstractValue * Op1 = Lookup(ValMap, I.getOperand(0), false);
 	  AbstractValue * Op2 = Lookup(ValMap, I.getOperand(1), false);
 	  if (Op1 && Op2)
-	    NewV = OldV->visitArithBinaryOp(Op1,Op2,I.getOpcode(),I.getOpcodeName());
+	    NewV = OldV->visitArithBinaryOp(Op1,Op2,
+					    I.getOpcode(),I.getOpcodeName());
 	  else{
 	    NewV=OldV->clone();
 	    NewV->makeTop();	      
@@ -919,7 +961,8 @@ void Fixpoint::visitInst(Instruction &I) {
 
 // Conservative assumptions if the code of the function is not
 // available to the analysis or intraprocedural analysis.
-void Fixpoint::FunctionWithoutCode(CallInst *CInst, Function * Callee, Instruction *I){
+void Fixpoint::
+FunctionWithoutCode(CallInst *CInst, Function * Callee, Instruction *I){
 
   // Make top the return value if it's trackable by the analysis
   if (!I->getType()->isVoidTy()) {
@@ -946,23 +989,28 @@ void Fixpoint::FunctionWithoutCode(CallInst *CInst, Function * Callee, Instructi
   // Make top all global variables that may be touched by the
   // function (CInst).
   if (Callee){
-    for (SmallPtrSet<GlobalVariable*, 64>::iterator I = TrackedGlobals.begin(), E = TrackedGlobals.end();
-	 I != E; ++I){    
+    for (SmallPtrSet<GlobalVariable*, 64>::iterator 
+	   I = TrackedGlobals.begin(), E = TrackedGlobals.end();
+	   I != E; ++I){    
       GlobalVariable *Gv = *I;
-      AliasAnalysis::ModRefResult IsModRef = AA->getModRefInfo(CInst,Gv,AliasAnalysis::UnknownSize);
-      if ( (IsModRef ==  AliasAnalysis::Mod) || (IsModRef ==  AliasAnalysis::ModRef) ){ 	
+      AliasAnalysis::ModRefResult IsModRef = 
+	AA->getModRefInfo(CInst,Gv,AliasAnalysis::UnknownSize);
+      if ( (IsModRef ==  AliasAnalysis::Mod) || 
+	   (IsModRef ==  AliasAnalysis::ModRef) ){ 	
 	if (isTrackedCondFlag(Gv)){
 	  TBool * GvFlag = TrackedCondFlags[Gv];    
 	  assert(GvFlag && "ERROR: flag not found in TrackedCondFlags");
 	  GvFlag->makeMaybe();
-	  DEBUG(dbgs() <<"\tGlobal Boolean flag " << Gv->getName() << " may be modified by " 
+	  DEBUG(dbgs() <<"\tGlobal Boolean flag " << Gv->getName() 
+		<< " may be modified by " 
 		<< Callee->getName() <<".\n");
 	}
 	else{
 	  AbstractValue * AbsGv = GlobalValMap.lookup(Gv);
 	  assert(AbsGv && "ERROR: entry not found in GlobalValMap");
 	  AbsGv->makeTop();
-	  DEBUG(dbgs() <<"\tGlobal variable " << Gv->getName() << " may be modified by " 
+	  DEBUG(dbgs() <<"\tGlobal variable " << Gv->getName() 
+		<< " may be modified by " 
 		<< Callee->getName() <<".\n");
 	}
       }
@@ -999,7 +1047,8 @@ void Fixpoint::addTrackedGlobalVariables(Module *M) {
   /// Keep track only integer scalar global variables whose addresses
   /// have not been taken. In LLVM, if the address has not been taken
   /// then they memory object still has its def-use chains.
-  for (Module::global_iterator Gv = M->global_begin(), E = M->global_end(); Gv != E; ++Gv){
+  for (Module::global_iterator 
+	 Gv = M->global_begin(), E = M->global_end(); Gv != E; ++Gv){
     if (!Utilities::AddressIsTaken(Gv) &&
 	Gv->getType()->isPointerTy() &&
 	Gv->getType()->getContainedType(0)->isIntegerTy())
@@ -1007,9 +1056,11 @@ void Fixpoint::addTrackedGlobalVariables(Module *M) {
 	DEBUG(printValueInfo(Gv,NULL));
 	// Initialize the global variable
 	if (Gv->hasInitializer()){
-	  if (ConstantInt * GvInitVal  = dyn_cast<ConstantInt>(Gv->getInitializer())){
+	  if (ConstantInt * GvInitVal  = 
+	      dyn_cast<ConstantInt>(Gv->getInitializer())){
 	    if (isCondFlag(Gv)){
-	      DEBUG(dbgs() << "\trecording a Boolean flag for global:" << Gv->getName() << "\n");
+	      DEBUG(dbgs() << "\trecording a Boolean flag for global:" 
+		    << Gv->getName() << "\n");
 	      /// \fixme We ignore the initialized value and assume
 	      /// "maybe".
 	      TrackedCondFlags.insert(std::make_pair(&*Gv, new TBool()));
@@ -1020,15 +1071,17 @@ void Fixpoint::addTrackedGlobalVariables(Module *M) {
 	}
 	else{
 	    if (isCondFlag(Gv)){
-	      DEBUG(dbgs() << "\trecording a Boolean flag for global:" << Gv->getName() << "\n");
+	      DEBUG(dbgs() << "\trecording a Boolean flag for global:" 
+		    << Gv->getName() << "\n");
 	      TBool * GvFlag = new TBool();
 	      GvFlag->makeFalse();	      
 	      TrackedCondFlags.insert(std::make_pair(&*Gv,GvFlag));	      
 	    }
 	    else{
-	      ConstantInt * Zero = cast<ConstantInt>(ConstantInt::
-						     get(Gv->getType()->getContainedType(0),
-							 0, IsAllSigned));							 
+	      ConstantInt * Zero = 
+		cast<ConstantInt>(ConstantInt::
+				  get(Gv->getType()->getContainedType(0),
+				      0, IsAllSigned));						
 	      GlobalValMap.insert(std::make_pair(&*Gv,initAbsValIntConstant(Gv,Zero)));
 	    }
 	}
@@ -1053,7 +1106,8 @@ void Fixpoint::addTrackedGlobalVariablesPessimistically(Module *M) {
 	DEBUG(printValueInfo(Gv,NULL));
 	// Initialize the global variable
 	if (isCondFlag(Gv)){
-	  DEBUG(dbgs() << "\trecording a Boolean flag for global:" << Gv->getName() << "\n");
+	  DEBUG(dbgs() << "\trecording a Boolean flag for global:" 
+		<< Gv->getName() << "\n");
 	  TrackedCondFlags.insert(std::make_pair(&*Gv,new TBool()));	      
 	}
 	else
@@ -1195,7 +1249,8 @@ void Fixpoint::visitPHINode(PHINode &PN) {
       AbstractValue *NewV = OldV->clone();
       ResetAbstractValue(NewV);
       DEBUG(dbgs() << "PHI node " << PN << "\n");
-      for (unsigned i=0, num_vals=PN.getNumIncomingValues(); i != num_vals;i++) {
+      for (unsigned i=0, num_vals=PN.getNumIncomingValues(); 
+	   i != num_vals;i++) {
 	if (PN.getIncomingValue(i)->getValueID() == Value::UndefValueVal) 
 	  continue;
 	if (isEdgeFeasible(PN.getIncomingBlock(i), PN.getParent())){				   
@@ -1203,7 +1258,8 @@ void Fixpoint::visitPHINode(PHINode &PN) {
 	  // reach top.
 	  if (NewV->IsTop()) 	      
 	    break;
-	  AbstractBlock *AbsPredecBB = BasicBlockToAbstractBlock[PN.getIncomingBlock(i)];
+	  AbstractBlock *AbsPredecBB = 
+	    BasicBlockToAbstractBlock[PN.getIncomingBlock(i)];
 	  assert(AbsPredecBB);
 	  MapValToAbstractTy PredecValMap = AbsPredecBB->getValMap();  
 
@@ -1548,7 +1604,7 @@ void Fixpoint::visitComparisonInst(ICmpInst &I){
   // Make sure we make a copy here
   TBool *LHS = new TBool(*TrackedCondFlags.lookup(&I));
 
-  ///////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////
   // The operands of the ICmpInst could be actually anything. E.g.,
   // 
   // %tmp37 = icmp ult double* %table.0, getelementptr inbounds ([544
@@ -1557,7 +1613,7 @@ void Fixpoint::visitComparisonInst(ICmpInst &I){
   // Here the operands are not in ValMap. Thus, we cannot raise an
   // exception in that case. Instead, we just make "maybe" the lhs of
   // the instruction.
-  ///////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////
   AbstractBlock *AbsBB      = BasicBlockToAbstractBlock[I.getParent()];
   assert(AbsBB);
   MapValToAbstractTy ValMap = AbsBB->getValMap();
@@ -1696,9 +1752,8 @@ void Fixpoint::addTrackedWideningPoints(Function * F){
     FindFunctionBackedges(*F, BackEdges);    
     // DestBackEdgeBB - Set of destination blocks of backedges
     SmallPtrSet<const BasicBlock*,16> DestBackEdgeBB;
-
-    for (SmallVector<std::pair<const BasicBlock*,const BasicBlock*>, 32>::iterator 
-	   I = BackEdges.begin(),E = BackEdges.end(); I != E; ++I){
+    typedef SmallVector<std::pair<const BasicBlock*,const BasicBlock*>, 32>::iterator It;
+    for (It I = BackEdges.begin(),E = BackEdges.end(); I != E; ++I){
       // DEBUG(dbgs() << "backedge from" << I->first->getName() << " to " << 
       // 	  I->second->getName() << "\n");
       DestBackEdgeBB.insert(I->second);    
@@ -1734,85 +1789,19 @@ void Fixpoint::addTrackedWideningPoints(Function * F){
   }  
 }
 
-//  Special cases: in loops like "while (i < 100)" where i is integer
-//  LLVM translates to "while(i <= 99)". However, we want to consider
-//  "100" as constant for the widening heuristics. Therefore, we add
-//  manually the constant "100".
-ConstantInt * generateConstantPlus1(ConstantInt *C, bool isSigned){
-  APInt VPlus1  = C->getValue() + 1;
-  return C->get(C->getType(), VPlus1.getSExtValue(), isSigned);
-		
-}
 
-///  Record constants that appear in the program and create their
-///  corresponding abstract values
-void Fixpoint::addTrackedIntegerConstants(Function *F){  
-  // We also insert the maximum and minimum values for unsigned and
-  // signed versions for common widths (8,16, and 32). This is
-  // important for abstract domains like WrappedRangeLattice in order
-  // to avoid widening to jump too much when the intervals wraparound.
-  LLVMContext *ctx = &F->getContext();
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getMinValue(8).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getMinValue(16).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getMinValue(32).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getMaxValue(8).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getMaxValue(16).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getMaxValue(32).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getSignedMinValue(8).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getSignedMinValue(16).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getSignedMinValue(32).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt8Ty(*ctx), 
-				   APInt::getSignedMaxValue(8).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt16Ty(*ctx), 
-				   APInt::getSignedMaxValue(16).getZExtValue(), IsAllSigned));
-  ConstSet.insert(ConstantInt::get(Type::getInt32Ty(*ctx), 
-				   APInt::getSignedMaxValue(32).getZExtValue(), IsAllSigned));
-  
-  for (inst_iterator I = inst_begin(F), E=inst_end(F) ; I != E; ++I){
-    for (User::op_iterator i = I->op_begin(), e = I->op_end(); i != e; ++i){
-      if (ConstantInt *C = dyn_cast<ConstantInt>(*i)){
-  	unsigned width;
-  	if (Utilities::getIntegerWidth(C->getType(),width)){
-  	  if (width <= 64){ // Programs like susan.c has i288 constants!
-  	    ConstValMap.insert(std::make_pair(&*C,initAbsIntConstant(C)));
-	    ConstSet.insert(C);
-	    ConstSet.insert(generateConstantPlus1(C, IsAllSigned));
-  	  }
-  	}
-      }
-      else{	
-  	if (Constant *CC = dyn_cast<Constant>(*i)){
-  	  if (CC->isNullValue()){ // "null"
-	    // Create an integer constant with value 0 and width 32
-	    // bits.
-	    ConstantInt * Zero = cast<ConstantInt>(ConstantInt::get(Type::getInt32Ty(*ctx), 0, IsAllSigned));
-  	    ConstValMap.insert(std::make_pair(&*CC,initAbsIntConstant(Zero)));
-  	  }
-  	}
-      }
-    } // end for
-  } // end for
-}
-
-///////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////
 // Stats utilities
-///////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////
 
 void Fixpoint::gatherStats(){
   // Iterate over all functions defined in the module.
   for (Module::iterator F = M->begin(), E=M->end() ; F != E; ++F){
     if (Utilities::IsTrackableFunction(F)){
-      for (Function::iterator BB = F->begin(), EE = F->end(); BB != EE; ++BB){
-	DenseMap<BasicBlock*, AbstractBlock*>::iterator It = BasicBlockToAbstractBlock.find(BB);
+      for (Function::iterator 
+	     BB = F->begin(), EE = F->end(); BB != EE; ++BB){
+	DenseMap<BasicBlock*, AbstractBlock*>::iterator It = 
+	  BasicBlockToAbstractBlock.find(BB);
 	if (It == BasicBlockToAbstractBlock.end())
 	  NumOfUnreachable++;
       else
@@ -1822,16 +1811,17 @@ void Fixpoint::gatherStats(){
   }
 }
 
-///////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////
 // Printing utililties
-///////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////
 
 void Fixpoint::printResultsGlobals(raw_ostream &Out){
   dbgs () <<"\n===-------------------------------------------------------------------------===\n" ;
   dbgs () << "                 Analysis Results for global variables \n" ;
   dbgs () <<"===-------------------------------------------------------------------------===\n" ;      
   // Iterate over all global variables of interest defined in the module
-  for (Module::global_iterator Gv = M->global_begin(), E = M->global_end();  Gv != E; ++Gv){
+  for (Module::global_iterator 
+	 Gv = M->global_begin(), E = M->global_end();  Gv != E; ++Gv){
     if (TrackedGlobals.count(Gv)){
       GlobalValMap[Gv]->print(Out);
       Out << "\n";
@@ -1850,8 +1840,10 @@ void Fixpoint::printResultsFunction(Function *F, raw_ostream &Out){
     dbgs () <<"===-------------------------------------------------------------------------===\n" ;      
     
     // Iterate over each basic block.
-    for (Function::iterator BB = F->begin(), EE = F->end(); BB != EE; ++BB){
-      DenseMap<BasicBlock*, AbstractBlock*>::iterator It = BasicBlockToAbstractBlock.find(BB);
+    for (Function::iterator 
+	   BB = F->begin(), EE = F->end(); BB != EE; ++BB){
+      DenseMap<BasicBlock*, AbstractBlock*>::iterator It = 
+	BasicBlockToAbstractBlock.find(BB);
       if (It == BasicBlockToAbstractBlock.end()){
 	Out << "Block " << BB->getName() << " is unreachable!\n";
       }
@@ -1877,7 +1869,8 @@ void Fixpoint::printResults(raw_ostream &Out){
 
 void printValueInfo(Value *v, Function *F){      
   if (Argument *Arg = dyn_cast<Argument>(v))
-    dbgs() << F->getName() << "." << Arg->getParent()->getName() << "." << Arg->getName() 
+    dbgs() << F->getName() << "." << Arg->getParent()->getName() 
+	   << "." << Arg->getName() 
 	   << " type(" << *Arg->getType() << ")\n";
   else{
     if (GlobalVariable *Gv = dyn_cast<GlobalVariable>(v)){
@@ -1887,8 +1880,9 @@ void printValueInfo(Value *v, Function *F){
     else{
       if (Instruction *Inst = dyn_cast<Instruction>(v)){
 	if (Inst->hasName()){
-	  dbgs() << F->getName() << "." << Inst->getParent()->getName() << "." <<  Inst->getName()
-		   << " type(" << *Inst->getType() << ")\n";
+	  dbgs() << F->getName() << "." << Inst->getParent()->getName() 
+		 << "." <<  Inst->getName()
+		 << " type(" << *Inst->getType() << ")\n";
 	}
 	// else{
 	//   dbgs() << Inst->getParent()->getName() << "#anonymous" 
@@ -1899,18 +1893,8 @@ void printValueInfo(Value *v, Function *F){
   }
 }
 
-void printIntConstants(SmallPtrSet<ConstantInt*, 16> JumpSet){
-  dbgs() << "PROGRAM INTEGER CONSTANTS \n";
-  for (SmallPtrSet<ConstantInt*, 16>::iterator I=JumpSet.begin(), E=JumpSet.end(); I != E; ++I){  
-    ConstantInt* C = *I;
-    dbgs ()  << "Added constant: " ;
-    C->print(dbgs()); 
-    dbgs() << "\n";
-  }
-  dbgs() << "\n";
-}
-
-void printUsersInst(Value *I,SmallPtrSet<BasicBlock*, 16> BBExecutable, bool OnlyExecutable,
+void printUsersInst(Value *I,SmallPtrSet<BasicBlock*, 16> BBExecutable, 
+		    bool OnlyExecutable,
 		    DenseMap<Value*, filter_users *> TrackedFilterUsers){ 
   dbgs() << "USERS of" << *I << ": \n";
   for (Value::use_iterator UI = I->use_begin(), E = I->use_end();
@@ -1924,7 +1908,8 @@ void printUsersInst(Value *I,SmallPtrSet<BasicBlock*, 16> BBExecutable, bool Onl
       dbgs() << "\t" << *U << "\n";
   }
   if (filter_users * Users = TrackedFilterUsers[I]){ 
-    for(filter_users::iterator UI = Users->begin(),UE = Users->end() ; UI != UE; ++UI){
+    for(filter_users::iterator 
+	  UI = Users->begin(),UE = Users->end() ; UI != UE; ++UI){
       if (Instruction * U = dyn_cast<Instruction>(*UI)){
 	if (OnlyExecutable){
 	  if (BBExecutable.count(U->getParent())) 
@@ -1939,18 +1924,21 @@ void printUsersInst(Value *I,SmallPtrSet<BasicBlock*, 16> BBExecutable, bool Onl
    
 void printTrackedRecursiveFunctions(SmallPtrSet<Function*, 16> TRF){
   dbgs() << "Recursive functions \n";
-  for (SmallPtrSet<Function*, 16>::iterator I=TRF.begin(), E=TRF.end(); I != E; ++I){        
+  for (SmallPtrSet<Function*, 16>::iterator 
+	 I=TRF.begin(), E=TRF.end(); I != E; ++I){        
     Function* F = *I;    
     dbgs ()  << "\t" << F->getName() << "\n";
   }
 }
 
 void printFilterUsers(DenseMap<Value*,filter_users*> TrackedFilterUsers){
-  for(DenseMap<Value*,filter_users*>::iterator I=TrackedFilterUsers.begin(), E= TrackedFilterUsers.end();
-	  I!=E; ++I){
+  for(DenseMap<Value*,filter_users*>::iterator 
+	I=TrackedFilterUsers.begin(), E= TrackedFilterUsers.end();
+      I!=E; ++I){
     dbgs() <<  I->first->getName() << " uses : {";
     filter_users * Users = I->second;
-	for(filter_users::iterator UI= Users->begin(), UE= Users->end(); UI !=UE; ++UI)
+	for(filter_users::iterator 
+	      UI= Users->begin(), UE= Users->end(); UI !=UE; ++UI)
 	  dbgs() << (*UI)->getName() << ";";      
 	dbgs() << "}\n";
   }

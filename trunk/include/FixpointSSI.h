@@ -64,7 +64,6 @@
 //////////////////////////////////////////////////////////////////////////////
 
 #include "AbstractValue.h"
-#include "WrappedRange.h"    // hook for a very special case.
 #include "Support/Utils.h"
 #include "Support/TBool.h"
 #include "llvm/Module.h"
@@ -91,9 +90,8 @@
 using namespace std;
 using namespace llvm;
 
-//#define DEBUG_TYPE "RangeAnalysis"
-
 //#define WARNINGS //!< To display warning messages
+#define DEBUG_TYPE "RangeAnalysis"
 
 namespace unimelb {
 
@@ -110,7 +108,8 @@ namespace unimelb {
   class BinaryConstraint{
   public:
     /// Constructor of the class.
-    BinaryConstraint(unsigned _pred, Value* _Op1, Value* _Op2): pred(_pred), Op1(_Op1), Op2(_Op2){}
+    BinaryConstraint(unsigned _pred, Value* _Op1, Value* _Op2): 
+      pred(_pred), Op1(_Op1), Op2(_Op2){}
     /// Destructor of the class.
     ~BinaryConstraint(){ 
       //dbgs() << "Destructor of BinaryConstraint is called!\n";
@@ -124,7 +123,8 @@ namespace unimelb {
       else           assert(false);
     }
     bool isEqual(BinaryConstraint *C){
-      return ( (pred == C->getPred()) && (Op1 == C->getOperand(0)) && (Op2 == C->getOperand(1)));
+      return ( (pred == C->getPred()) && (Op1 == C->getOperand(0)) && 
+	       (Op2 == C->getOperand(1)));
     }
     Value*   getOperand(unsigned i){ 
       if      (i==0) return Op1;
@@ -208,7 +208,8 @@ namespace unimelb {
   };
 
   struct BinaryConstraintCmp {
-    bool operator()(const BinaryConstraint *C1, const BinaryConstraint *C2) const {
+    bool operator()(const BinaryConstraint *C1, 
+		    const BinaryConstraint *C2) const {
       // syntactic equivalence.
       return ( C1->getPred()     == C2->getPred() &&
       	       C1->getOperand(0) == C2->getOperand(0) &&
@@ -221,40 +222,7 @@ namespace unimelb {
 
 
   class FixpointSSI {    
-  public:    
-    /// Constructors of the class
-    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA);
-    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA, bool isSigned);
-    /// Destructor of the class
-    virtual ~FixpointSSI();
-    /// Methods for support type inquiry through isa, cast, and dyn_cast.
-    static inline bool classof(const FixpointSSI *) { return true; }
-   
-    /// Identify the variables to be tracked for the analysis,
-    /// and give them their corresponding initial abstract value.
-    void init(Function *F); 
-    /// Produce an intraprocedural fixpoint for F.
-    void solve(Function *F);
-    /// Output fixpoint results for the whole module.
-    void printResults(raw_ostream &);
-    void printResultsGlobals(raw_ostream &);
-    void printResultsFunction(Function *, raw_ostream &);
-    /* /// Gather some quick stats. */
-    /* void gatherStats(); */
-    /// To provide the analysis results to other passes.
-    AbstractStateTy getValMap() const { return ValueState; } 
-
-    /// Create a bottom abstract value.
-    virtual AbstractValue* initAbsValBot(Value *) = 0;
-    /// Create a top abstract value.
-    virtual AbstractValue* initAbsValTop(Value *) = 0;
-    /// Create an abstract value from an integer constant.
-    virtual AbstractValue* initAbsIntConstant(ConstantInt *) = 0;
-    /// Create an abstract value from a value initialized to an
-    /// integer constant.
-    virtual AbstractValue* initAbsValIntConstant(Value *, ConstantInt *) = 0;
-
-
+  private:
     // To compute the fixpoint. 
     void solveLocal(Function *);
     void computeFixpo();
@@ -275,10 +243,10 @@ namespace unimelb {
 
     /// Execute an instruction I.
     void visitInst(Instruction &I);
-    /// Execute a PHI instruction I.
+    /// Execute a PHI instruction I if the domain is a lattice.
     void visitPHINode(PHINode &I);
-    /// Execute a PHI instruction I if the underlying domain is WrappedRange.
-    void visitPHINode(WrappedRange * AbsVal, PHINode &I);
+    /// Execute a PHI instruction I if the domain is not a lattice.
+    void visitPHINode(AbstractValue *&AbsVal, PHINode &I);
     /// Execute a Store instruction I.
     void visitStoreInst(StoreInst &I);
     /// Execute a Select instruction I
@@ -295,8 +263,10 @@ namespace unimelb {
     void visitComparisonInst(ICmpInst &I);
     /// Execute a Sigma instruction
     void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma);
-    void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma, BasicBlock *, BranchInst * BI);
-    void generateFilters(Value *, Value *, BranchInst *, BasicBlock *, FiltersTy &);
+    void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma, 
+			BasicBlock *, BranchInst * BI);
+    void generateFilters(Value *, Value *, BranchInst *, BasicBlock *, 
+			 FiltersTy &);
     bool evalFilter(AbstractValue * &, Value *, const FiltersTy );
     /// Execute a Boolean logical instruction: and/or/xor whose
     /// operatons of i1.
@@ -321,6 +291,41 @@ namespace unimelb {
     // To cleanup.
     void Cleanup();
 
+  public:    
+    /// Constructors of the class
+    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA);
+    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA, 
+		bool isSigned);
+    /// Destructor of the class
+    virtual ~FixpointSSI();
+    /// Methods for support type inquiry through isa, cast, and dyn_cast.
+    static inline bool classof(const FixpointSSI *) { return true; }
+   
+    /// Identify the variables to be tracked for the analysis,
+    /// and give them their corresponding initial abstract value.
+    void init(Function *F); 
+    /// Produce an intraprocedural fixpoint for F.
+    void solve(Function *F);
+    /// Output fixpoint results for the whole module.
+    void printResults(raw_ostream &);
+    void printResultsGlobals(raw_ostream &);
+    void printResultsFunction(Function *, raw_ostream &);
+    /* /// Gather some quick stats. */
+    /* void gatherStats(); */
+
+    /// To provide the analysis results to other passes.
+    AbstractStateTy getValMap() const { return ValueState; } 
+
+    /// Create a bottom abstract value.
+    virtual AbstractValue* initAbsValBot(Value *)=0;
+    /// Create a top abstract value.
+    virtual AbstractValue* initAbsValTop(Value *)=0;
+    /// Create an abstract value from an integer constant.
+    virtual AbstractValue* initAbsIntConstant(ConstantInt *)=0;
+    /// Create an abstract value from a value initialized to an
+    /// integer constant.
+    virtual AbstractValue* initAbsValIntConstant(Value *,ConstantInt *)=0;
+
   private:
     Module * M;     //!< The module where the analysis lives.
     AbstractStateTy ValueState; //!< Map Values to abstract values.
@@ -333,18 +338,20 @@ namespace unimelb {
 
     /// If a sigma node S depends on a comparison instruction that
     /// involves two variables X and Y, S will be user only of one of
-    /// them. We use this map to remember that S is user of both X and Y.    
+    /// them. We use this map to remember that S is user of both X and
+    /// Y.
     SigmaUsersTy TrackedValuesUsedSigmaNode;    
     
     /// Set of widening points.
     SmallPtrSet<Instruction*,16> WideningPoints;
     /// If zero then widening will not be applied. Otherwise, it
-    /// refers to the number of times an abstract value must change until we
-    /// widen it. Once, we widen a value its counter starts from 0 again.
+    /// refers to the number of times an abstract value must change
+    /// until we widen it. Once, we widen a value its counter starts
+    /// from 0 again.
     unsigned WideningLimit; 
     /// Set of integer constants that appear in the program. Used by
     /// jump-set widening.
-    SmallPtrSet<ConstantInt*, 16> ConstSet; 
+    ConstantSetTy ConstSet; 
     /// If NarrowingLimit zero then narrowing will not be applied.
     unsigned NarrowingLimit;
     /// Internal flag for the analysis to know that it is performing
