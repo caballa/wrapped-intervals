@@ -83,7 +83,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/DepthFirstIterator.h"
-
+#include <tr1/memory>
 #include <set>
 #include <stack>
 
@@ -92,6 +92,7 @@ using namespace llvm;
 
 //#define WARNINGS //!< To display warning messages
 #define DEBUG_TYPE "RangeAnalysis"
+#define SKIP_TRAP_BLOCKS
 
 namespace unimelb {
 
@@ -129,12 +130,18 @@ namespace unimelb {
     Value*   getOperand(unsigned i){ 
       if      (i==0) return Op1;
       else if (i==1) return Op2;
-      else           assert(false);
+      else{
+	assert(false);
+	return NULL;
+      }
     }
     Value*   getOperand(unsigned i) const{ 
       if      (i==0) return Op1;
       else if (i==1) return Op2;
-      else           assert(false);
+      else{           
+	assert(false);
+	return NULL;
+      }
     }
     
     void swap(){
@@ -206,20 +213,22 @@ namespace unimelb {
       dbgs() << V->getName();
     }
   };
-
+  typedef std::tr1::shared_ptr<BinaryConstraint>  BinaryConstraintPtr;
   struct BinaryConstraintCmp {
-    bool operator()(const BinaryConstraint *C1, 
-		    const BinaryConstraint *C2) const {
+    bool operator()(const BinaryConstraintPtr C1, 
+		    const BinaryConstraintPtr C2) const {
       // syntactic equivalence.
-      return ( C1->getPred()     == C2->getPred() &&
-      	       C1->getOperand(0) == C2->getOperand(0) &&
-      	       C1->getOperand(1) == C2->getOperand(1));
+      return ( C1.get()->getPred()     == C2.get()->getPred() &&
+      	       C1.get()->getOperand(0) == C2.get()->getOperand(0) &&
+      	       C1.get()->getOperand(1) == C2.get()->getOperand(1));
     }
   };
 
-  typedef std::set<BinaryConstraint*, BinaryConstraintCmp> BinaryConstraintSetTy;
-  typedef DenseMap<Value* , BinaryConstraintSetTy * > FiltersTy;
 
+  //typedef std::set<BinaryConstraintPtr, BinaryConstraintCmp> BinaryConstraintSetTy;
+  //typedef DenseMap<Value* , BinaryConstraintSetTy * > FiltersTy;
+
+  typedef DenseMap<Value* , BinaryConstraintPtr> SigmaFiltersTy;
 
   class FixpointSSI {    
   private:
@@ -265,9 +274,12 @@ namespace unimelb {
     void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma);
     void visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma, 
 			BasicBlock *, BranchInst * BI);
-    void generateFilters(Value *, Value *, BranchInst *, BasicBlock *, 
-			 FiltersTy &);
-    bool evalFilter(AbstractValue * &, Value *, const FiltersTy );
+
+    void generateFilters(Value *, Value *, BranchInst *, BasicBlock *); 
+    bool evalFilter(AbstractValue * &, Value *);
+    // void generateFilters(Value *, Value *, BranchInst *, BasicBlock *, 
+    // 			 FiltersTy &);
+    // bool evalFilter(AbstractValue * &, Value *, const FiltersTy );
     /// Execute a Boolean logical instruction: and/or/xor whose
     /// operatons of i1.
     void visitBooleanLogicalInst(Instruction &I);
@@ -288,9 +300,22 @@ namespace unimelb {
     /// is not available or we do not want to analyze the function.
     void FunctionWithoutCode(CallInst *, Function *, Instruction *);
 
-    // To cleanup.
-    void Cleanup();
+    /// Cleanup to make sure the analysis of a function does not
+    /// interfere with others.
+    inline void Cleanup(){
+      ValueState.clear();
+      TrackedCondFlags.clear();
+      InstWorkList.clear();
+      BBWorkList.clear();
+      BBExecutable.clear();
+      KnownFeasibleEdges.clear();
+      WideningPoints.clear();
+#ifdef SKIP_TRAP_BLOCKS
+      TrackedTrapBlocks.clear();
+#endif 
 
+    }
+    
   public:    
     /// Constructors of the class
     FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA);
@@ -310,11 +335,6 @@ namespace unimelb {
     void printResults(raw_ostream &);
     void printResultsGlobals(raw_ostream &);
     void printResultsFunction(Function *, raw_ostream &);
-    /* /// Gather some quick stats. */
-    /* void gatherStats(); */
-
-    /// To provide the analysis results to other passes.
-    AbstractStateTy getValMap() const { return ValueState; } 
 
     /// Create a bottom abstract value.
     virtual AbstractValue* initAbsValBot(Value *)=0;
@@ -325,6 +345,15 @@ namespace unimelb {
     /// Create an abstract value from a value initialized to an
     /// integer constant.
     virtual AbstractValue* initAbsValIntConstant(Value *,ConstantInt *)=0;
+
+    /// To provide the analysis results to other passes.
+    /// FIXME: not nice since we are returning internal information.
+    inline AbstractStateTy getValMap() const { 
+      return ValueState; 
+    } 
+    inline bool IsReachable(BasicBlock *B) const {
+      return (BBExecutable.count(B) > 0);
+    }
 
   private:
     Module * M;     //!< The module where the analysis lives.
@@ -341,7 +370,8 @@ namespace unimelb {
     /// them. We use this map to remember that S is user of both X and
     /// Y.
     SigmaUsersTy TrackedValuesUsedSigmaNode;    
-    
+    SigmaFiltersTy SigmaFilters; 
+   
     /// Set of widening points.
     SmallPtrSet<Instruction*,16> WideningPoints;
     /// If zero then widening will not be applied. Otherwise, it
@@ -366,6 +396,11 @@ namespace unimelb {
 
     /// [HOOK] To consider all integers signed or not.
     bool IsAllSigned;
+
+#ifdef SKIP_TRAP_BLOCKS
+    DenseMap<BasicBlock*,unsigned int> TrackedTrapBlocks;
+#endif 
+
 
     /// Return true if the instruction has a left-hand side.
     inline bool HasLeftHandSide(Instruction &I);

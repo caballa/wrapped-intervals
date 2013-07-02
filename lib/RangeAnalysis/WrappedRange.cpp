@@ -52,12 +52,12 @@ void printComparisonOp(unsigned Pred,raw_ostream &Out){
   }
 }
 
-inline bool IsMSBOne(APInt x){
+inline bool IsMSBOne(const APInt &x){
   // This tests the high bit of the APInt to determine if it is set.
   return (x.isNegative());
 }
 
-inline bool IsMSBZero(APInt x){
+inline bool IsMSBZero(const APInt &x){
   return (!IsMSBOne(x));
 }
 
@@ -87,16 +87,6 @@ inline  APInt Lex_max(const APInt &x, const APInt &y){
 /// Lexicographical minimum
 inline  APInt Lex_min(const APInt &x, const APInt &y){
   return (Lex_LessOrEqual(x,y)? x : y);
-}
-
-// Return true if the cardinality of the set obtained by applying the
-// gamma function (in the sense of Galois connections) is 1
-bool WrappedRange::isGammaSingleton() const {
-  if (isBot() || IsTop()) return false;
-  APInt lb  = getLB();
-  APInt ub  = getUB();
-  APInt card  = WrappedRange::WCard(lb,ub);
-  return (card == 1);
 }
 
 bool WrappedRange::isBot() const { 
@@ -129,32 +119,10 @@ bool WrappedRange::isEqual(AbstractValue* V){
   return (S->lessOrEqual(T) && T->lessOrEqual(S));
 }
 
-inline bool IsRangeTooBig(APInt lb, APInt ub){
-  APInt card  = WrappedRange::WCard(lb,ub);
-  // If card does not fit into uint64_t then APInt raises an
-  // exception.
-  uint64_t n     =  card.getZExtValue();
-  // If width of lb and ub are different then APInt raises an
-  // exception.
-  unsigned width = lb.getBitWidth();
-  // If 2^w does not fit into uint64_t then APInt raises an exception.
-  uint64_t Max = (APInt::getMaxValue(width)).getZExtValue() + 1;
-  return (n >= Max);
-}
-
-inline void WrappedRange::
-convertWidenBoundsToWrappedRange(APInt lb, APInt ub){
-  if (IsRangeTooBig(lb,ub))
-    makeTop();
-  else{
-    setLB(lb);
-    setUB(ub);
-  }
-}
 
 /// Choose the greatest of the constants that is smaller than lb and
 /// the smallest of the constants that it is bigger than ub.
-void widenOneInterval(APInt a, APInt b, unsigned int width,		      
+void widenOneInterval(const APInt &a, const APInt &b, unsigned int width,		      
 		      const ConstantSetTy &JumpSet,
 		      APInt &lb, APInt &ub){
 
@@ -193,7 +161,7 @@ void widenOneInterval(APInt a, APInt b, unsigned int width,
 #endif 
 }
 
-bool checkOverflowForWideningJump(APInt Card){
+bool checkOverflowForWideningJump(const APInt &Card){
   // If a or b do not fit into uint64_t or they do not have same width
   // then APInt raises an exception
   uint64_t value = Card.getZExtValue();
@@ -208,7 +176,7 @@ bool checkOverflowForWideningJump(APInt Card){
 }
 
 inline WrappedRange 
-mkSmallerInterval(APInt x, APInt y, unsigned width){
+mkSmallerInterval(const APInt &x, const APInt &y, unsigned width){
   WrappedRange R1(x, x, width);    
   WrappedRange R2(y, y, width);    
   R1.join(&R2);
@@ -425,7 +393,7 @@ void WrappedRange::widening(AbstractValue *PreviousV,
 }
 
 /// Return true if x \in [a,b]. 
-bool WrappedRange::WrappedMember(APInt e) const{
+bool WrappedRange::WrappedMember(const APInt &e) const{
   if (isBot()) return false;
   if (IsTop()) return true;
 
@@ -492,6 +460,7 @@ void WrappedRange::print(raw_ostream &Out) const{
 }
 
 void WrappedRange::join(AbstractValue *V){
+
   // Join is mostly called when a phi node is encountered. At that
   // point, we cannot make any assumption about signedeness so we need
   // to cut at the south pole
@@ -579,9 +548,8 @@ void WrappedRange::WrappedJoin(AbstractValue *V){
   }
   // Left/Right Leaning cases: non-deterministic cases
   // Here we use lexicographical order to resolve ties
-  // if ( Lex_LessThan(WCard(b,c), WCard(d,a))){ 
   else if ( Lex_LessOrEqual(WCard(b,c), WCard(d,a)) ||
-       (WCard(b,c) == WCard(d,a) &&  Lex_LessOrEqual(a,c))){
+	    (WCard(b,c) == WCard(d,a) &&  Lex_LessThan(a,c))){
 #ifdef DEBUG_JOIN
     dbgs() << "\nnon-overlapping case (left)\n";
     dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false) 
@@ -711,13 +679,13 @@ WrappedRange WrappedComplement(const WrappedRange &R){
 
 /// Return true if starting from 0....0 (South Pole) we encounter y
 /// before than x. This coincides with unsigned less or equal.
-inline bool CrossSouthPole(const APInt x,  const APInt y)  {
+inline bool CrossSouthPole(const APInt &x,  const APInt &y)  {
   return y.ult(x);
 }
 
 /// Return true if starting from 2^{w-1} (North Pole) we encounter y
 /// before than x. This coincides with signed less or equal.
-inline bool CrossNorthPole(const APInt x,  const APInt y)  {
+inline bool CrossNorthPole(const APInt &x,  const APInt &y)  {
   return (y.slt(x));
 }
 
@@ -747,18 +715,12 @@ GeneralizedJoin(std::vector<AbstractValue *> Values){
     WrappedRange R(*(*I));
     if (R.IsTop() || CrossSouthPole(R.getLB(), R.getUB())){      
 #ifdef DEBUG_GENERALIZED_JOIN
-      R.printRange(dbgs());
-      dbgs() << " crosses the south pole!\n";
-      dbgs() << "extend("; 
-      f.printRange(dbgs());
-      dbgs() << ",";
-      R.printRange(dbgs());
-      dbgs() << ")=";
+      dbgs() << R << " crosses the south pole!\n";
+      dbgs() << "extend(" << f << "," << R << ")=";
 #endif 
       f = Extend(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
-      f.printRange(dbgs());
-      dbgs() << "\n";
+      dbgs() << f << "\n";
 #endif 
     }
   }
@@ -769,40 +731,23 @@ GeneralizedJoin(std::vector<AbstractValue *> Values){
     WrappedRange R(*(*I));
     WrappedRange tmp = ClockWiseGap(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
-    dbgs() << "gap(";
-    f.printRange(dbgs());
-    dbgs() << ",";
-    R.printRange(dbgs());
-    dbgs() << " = ";
-    tmp.printRange(dbgs());
-    dbgs() << ")\n";
-
-    dbgs() << "Bigger(";
-    g.printRange(dbgs());
-    dbgs() << ",";
-    tmp.printRange(dbgs());
-    dbgs() << ") = ";
+    dbgs() << "Gap(" << f << "," << R << " = " << tmp  << ")\n";
+    dbgs() << "Bigger(" << g << "," << tmp  << ") = ";
 #endif 
     g = Bigger(g,tmp);
 #ifdef DEBUG_GENERALIZED_JOIN
-    g.printRange(dbgs());
-    dbgs() << "\n";
-    dbgs() << "Extend(";
-    f.printRange(dbgs());
-    dbgs() << ",";
-    R.printRange(dbgs());
-    dbgs() << ") = ";
+    dbgs() << g << "\n";
+    dbgs() << "Extend(" << f << "," << R << ") = ";
 #endif 
-    Extend(f, R);
+    f = Extend(f, R);
 #ifdef DEBUG_GENERALIZED_JOIN
-    f.printRange(dbgs());
-    dbgs() << "\n";
+    dbgs() << f << "\n";
 #endif 
-  }  
+  }
+
   WrappedRange Tmp = WrappedComplement(Bigger(g,WrappedComplement(f)));
 #ifdef DEBUG_GENERALIZED_JOIN
-  Tmp.print(dbgs());
-  dbgs()<< "\n";
+  dbgs() << Tmp << "\n";
 #endif 
   this->setLB(Tmp.getLB());
   this->setUB(Tmp.getUB());
@@ -819,6 +764,7 @@ void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
   WrappedRange * R1 = cast<WrappedRange>(V1);
   WrappedRange * R2 = cast<WrappedRange>(V2);
 
+#if 1
   this->makeBot();
   // **SOUTH POLE SPLIT** 
   std::vector<WrappedRangePtr> s1 = 
@@ -835,6 +781,13 @@ void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
       this->WrappedJoin(&tmp);
     }
   }
+#else
+  this->makeBot();
+  WrappedRange tmp = WrappedMeet(R1,R2);
+  this->WrappedJoin(&tmp);
+#endif 
+
+
 }
 
 
@@ -845,6 +798,10 @@ WrappedMeet(WrappedRange *S, WrappedRange *T){
   APInt b = S->getUB();
   APInt c = T->getLB();
   APInt d = T->getUB();
+
+#ifdef DEBUG_MEET
+  dbgs() << "meet(" << *S << "," << *T << ")\n";
+#endif 
 
   APInt lb; APInt ub;
   unsigned int width = a.getBitWidth();
@@ -1487,7 +1444,7 @@ void WrappedRange::
 
 /// Return true iff overflow during addition or substraction (same
 /// condition).
-bool IsWrappedOverflow_AddSub(APInt a, APInt b, APInt c, APInt d){
+bool IsWrappedOverflow_AddSub(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   // a,b,c,d are unsigned 
   //
   // If the four APInt's do not have the same width then APInt raises
@@ -1508,7 +1465,7 @@ bool IsWrappedOverflow_AddSub(APInt a, APInt b, APInt c, APInt d){
 
 
 /// Return true iff overflow during left shift.
-bool IsWrappedOverflow_Shl(WrappedRange * Op, APInt shift){
+bool IsWrappedOverflow_Shl(WrappedRange * Op, const APInt &shift){
   APInt a = Op->getLB();
   APInt b = Op->getUB();
   APInt tmp  = WrappedRange::WCard(a,b);
@@ -1528,7 +1485,7 @@ bool IsWrappedOverflow_Shl(WrappedRange * Op, APInt shift){
 
 /// Cut only at north pole
 std::vector<WrappedRangePtr> 
-WrappedRange::nsplit(APInt x, APInt y, unsigned width){
+WrappedRange::nsplit(const APInt &x, const APInt &y, unsigned width){
 
   // Temporary wrapped interval for north pole
   APInt NP_lb = APInt::getSignedMaxValue(width); // 0111...1
@@ -1558,7 +1515,7 @@ WrappedRange::nsplit(APInt x, APInt y, unsigned width){
 
 /// Cut only at south pole
 std::vector<WrappedRangePtr> 
-WrappedRange::ssplit(APInt x, APInt y, unsigned width){
+WrappedRange::ssplit(const APInt &x, const APInt &y, unsigned width){
   // Temporary wrapped interval for south pole
   APInt SP_lb = APInt::getMaxValue(width); // 111...1
   APInt SP_ub(width, 0, false);
@@ -1588,7 +1545,7 @@ WrappedRange::ssplit(APInt x, APInt y, unsigned width){
 }
 
 /// Cut both at north and south poles
-std::vector<WrappedRangePtr> psplit(APInt x, APInt y, unsigned width){
+std::vector<WrappedRangePtr> psplit(const APInt &x, const APInt &y, unsigned width){
 
   std::vector<WrappedRangePtr> res;  
   std::vector<WrappedRangePtr> s1 = WrappedRange::nsplit(x,y,width);
@@ -1625,13 +1582,21 @@ std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
       // if the interval is [0,0] we don't push anything
     }
     else{
-      // Cross the south pole: split into two intervals
-      APInt plusOne(width, 1, true);              // 000...1 
-      APInt minusOne = APInt::getMaxValue(width); // 111...1
-      WrappedRangePtr s1(new WrappedRange(R->getLB(),minusOne  ,width)); // [x, 111....1]
-      WrappedRangePtr s2(new WrappedRange(plusOne   ,R->getUB(),width));  // [000...1,  y] 
-      purgedZeroIntervals.push_back(s1);
-      purgedZeroIntervals.push_back(s2);
+      if (R->getUB() == 0){
+	// If interval is e.g., [1000,0000] then we keep one interval
+	APInt minusOne = APInt::getMaxValue(width); // 111...1
+	WrappedRangePtr s(new WrappedRange(R->getLB(),minusOne  ,width)); // [x, 111....1]
+	purgedZeroIntervals.push_back(s);
+      }
+      else{
+	// Cross the south pole: split into two intervals
+	APInt plusOne(width, 1, true);              // 000...1 
+	APInt minusOne = APInt::getMaxValue(width); // 111...1
+	WrappedRangePtr s1(new WrappedRange(R->getLB(),minusOne  ,width)); // [x, 111....1]
+	WrappedRangePtr s2(new WrappedRange(plusOne   ,R->getUB(),width));  // [000...1,  y] 
+	purgedZeroIntervals.push_back(s1);
+	purgedZeroIntervals.push_back(s2);
+      }
     }
   }
   else{  
@@ -1684,11 +1649,11 @@ WrappedRange UnsignedWrappedMult(const WrappedRange *Op1,
 }
 
 
-inline bool AllPos(APInt a, APInt b, APInt c, APInt d){
+inline bool AllPos(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   return (IsMSBZero(a) && IsMSBZero(b) && IsMSBZero(c) && IsMSBZero(d));
 }
 
-inline bool AllNeg(APInt a, APInt b, APInt c, APInt d){
+inline bool AllNeg(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   return (IsMSBOne(a) && IsMSBOne(b) && IsMSBOne(c) && IsMSBOne(d));
 }
 
@@ -2107,6 +2072,8 @@ void WrappedRange::
 AbstractValue* WrappedRange::
 visitArithBinaryOp(AbstractValue *V1,AbstractValue *V2,
 		   unsigned OpCode, const char *OpCodeName){
+
+  //test_GeneralizedJoin();
   
   WrappedRange *Op1 = cast<WrappedRange>(V1);
   WrappedRange *Op2 = cast<WrappedRange>(V2);
@@ -2231,84 +2198,81 @@ visitCast(Instruction &I,
   const Type * srcTy  =  I.getOperand(0)->getType();
   const Type * destTy =  I.getType();
   BaseRange::
-    checkCastingOp(srcTy, srcWidth, destTy, 
-		   destWidth,I.getOpcode(),RHS->getWidth());
-  
+    checkCastingOp(srcTy,srcWidth,destTy,destWidth,I.getOpcode(),RHS->getWidth()); 
+		   
   /// Start doing casting: change width
-  LHS->setWidth(destWidth);        
-  
+  LHS->setZeroAndChangeWidth(destWidth);          
+
   /// Simple cases first: bottom and top
-  if (RHS->isBot()){
+  if (RHS->isBot())
     LHS->makeTop(); // be conservative
-    goto END;
-  }    
-  if (RHS->IsTop()){
+  else if (RHS->IsTop())
     LHS->makeTop();
-    goto END;
+  else{
+    switch(I.getOpcode()) {
+    case Instruction::Trunc:
+      {
+	unsigned k;
+	Utilities::getIntegerWidth(I.getType(),k);      
+	Truncate(LHS, RHS,k);
+      }
+      break;
+    case Instruction::ZExt:
+      {
+	unsigned k;
+	Utilities::getIntegerWidth(I.getType(),k);
+	// **SOUTH POLE SPLIT** and compute signed extension for each of
+	// two elements and then lubbing them
+	std::vector<WrappedRangePtr> s = 
+	  ssplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
+	WrappedRange Tmp(*LHS);
+	LHS->makeBot();  
+	for (std::vector<WrappedRangePtr>::iterator 
+	       I=s.begin(), E=s.end(); I!=E; ++I){
+	  APInt a = (*I).get()->getLB();
+	  APInt b = (*I).get()->getUB();
+	  Tmp.setLB(a.zext(k));
+	  Tmp.setUB(b.zext(k));
+#ifdef  DEBUG_CAST
+	  dbgs() << "ZExt([" << a << "," << b << "]," << k << ")=" << Tmp << "\n"; 
+#endif 	
+	  // GeneralizedJoin does not help since we have at most two
+	  // intervals to be joined.
+	  LHS->join(&Tmp);
+	}
+      }
+      break;
+    case Instruction::SExt:  
+      {  
+	unsigned k;
+	Utilities::getIntegerWidth(I.getType(),k);
+	// **NORTH POLE SPLIT** and compute signed extension for each of
+	// the two elements and then lubbing them
+	std::vector<WrappedRangePtr> s = 
+	  nsplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
+	WrappedRange Tmp(*LHS);
+	LHS->makeBot();  
+	typedef std::vector<WrappedRangePtr>::iterator It;
+	for (It I=s.begin(), E=s.end(); I!=E; ++I){
+	  APInt a = (*I).get()->getLB();
+	  APInt b = (*I).get()->getUB();
+	  Tmp.setLB(a.sext(k));
+	  Tmp.setUB(b.sext(k));    
+#ifdef  DEBUG_CAST
+	  dbgs() << "SExt([" << a << "," <<  b << "]," << k << ")=" << Tmp << "\n"; 
+#endif 	
+	  // GeneralizedJoin does not help since we have at most two
+	  // intervals to be joined.
+	  LHS->join(&Tmp);
+	}
+      }
+      break;    
+    default:; // bitcast are non-op
+    } // end switch
   }
   
-  switch(I.getOpcode()) {
-  case Instruction::Trunc:
-    {
-      unsigned k;
-      Utilities::getIntegerWidth(I.getType(),k);      
-      Truncate(LHS, RHS,k);
-    }
-    break;
-  case Instruction::ZExt:
-    {
-      unsigned k;
-      Utilities::getIntegerWidth(I.getType(),k);
-      // **SOUTH POLE SPLIT** and compute signed extension for each of
-      // two elements and then lubbing them
-      std::vector<WrappedRangePtr> s = 
-	ssplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
-      WrappedRange Tmp(*LHS);
-      LHS->makeBot();  
-      for (std::vector<WrappedRangePtr>::iterator 
-	     I=s.begin(), E=s.end(); I!=E; ++I){
-	APInt a = (*I).get()->getLB();
-	APInt b = (*I).get()->getUB();
-	Tmp.setLB(a.zext(k));
-	Tmp.setUB(b.zext(k));
-#ifdef  DEBUG_CAST
-	dbgs() << "ZExt([" << a << "," << b << "]," << k << ")=" << Tmp << "\n"; 
-#endif 	
-	// FIXME: we could use here GeneralizedJoin for more precision
-	LHS->join(&Tmp);
-      }
-    }
-    break;
-  case Instruction::SExt:  
-    {  
-      unsigned k;
-      Utilities::getIntegerWidth(I.getType(),k);
-      // **NORTH POLE SPLIT** and compute signed extension for each of
-      // the two elements and then lubbing them
-      std::vector<WrappedRangePtr> s = 
-	nsplit(RHS->getLB(), RHS->getUB(), RHS->getLB().getBitWidth());
-      WrappedRange Tmp(*LHS);
-      LHS->makeBot();  
-      typedef std::vector<WrappedRangePtr>::iterator It;
-      for (It I=s.begin(), E=s.end(); I!=E; ++I){
-	APInt a = (*I).get()->getLB();
-	APInt b = (*I).get()->getUB();
-	Tmp.setLB(a.sext(k));
-	Tmp.setUB(b.sext(k));    
-#ifdef  DEBUG_CAST
-	dbgs() << "SExt([" << a << "," <<  b << "]," << k << ")=" << Tmp << "\n"; 
-#endif 	
-	// FIXME: we could use here GeneralizedJoin for more precision
-	LHS->join(&Tmp);
-      }
-    }
-    break;    
-  default:; // bitcast are non-op
-    } // end switch
-  
- END:
   if (!V) delete RHS;
-  LHS->normalizeTop();    
+   LHS->normalizeTop();    
   DEBUG(dbgs() << "\t[RESULT]");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");      
@@ -2563,8 +2527,31 @@ visitBitwiseBinaryOp(AbstractValue * V1,
     else if (Op1->IsTop()){
       WrappedRange Tmp(*Op1);
       Tmp.resetTopFlag();
-      Tmp.setLB((uint64_t) 0);
-      Tmp.setUB(APInt::getMaxValue(Tmp.getWidth()));
+      // NOTE: Here we can create either [0..0,1...1] or
+      // [10...0,01...1]. The former is more efficient because it
+      // avoids a cut at SP later on. However, depending on how join
+      // resolves non-deterministic cases the latter may be more
+      // precise. 
+      // 
+      // E.g., consider 4-bit intervals top or [0010,0010] and
+      // then a signed extension to 5 bits.
+      //
+      // [0000,1111] or [0010,0010] = [0010,1111]
+      // after signed extension we get [00010,11111]
+      //
+      // [1000,0111] or [0010,0010] can produce either [0010,1111] or
+      // [1010,0111] depending on the join. If we choose [1010,0111]
+      // then after signed extension we get [11010,00111] which is
+      // more precise than [00010,11111] !!
+      //
+      // We create here [0..0,1...1] which doesn't cross SP.
+      // Therefore, Or,And, and XOr will not perform any cut.
+      //Tmp.setLB((uint64_t) 0);
+      //Tmp.setUB(APInt::getMaxValue(Tmp.getWidth()));
+      // We create here [10...0,01...1] which doesn't cross NP.
+      Tmp.setLB(APInt::getSignedMinValue(Tmp.getWidth()));
+      Tmp.setUB(APInt::getSignedMaxValue(Tmp.getWidth()));
+
 #ifdef DEBUG_LOGICALBIT
       dbgs() << "Operand 1 is top\n";
 #endif 
@@ -2613,48 +2600,49 @@ visitBitwiseBinaryOp(AbstractValue * V1,
   return LHS;  
 }
 
+
 // Tests
 
-// void test_GeneralizedJoin(){
-//   {
-//     APInt a(8,  2,false);  APInt b(8, 10,false);
-//     APInt c(8,120,false);  APInt d(8,130,false);
-//     APInt e(8,132,false);  APInt f(8,135,false);
-//     APInt zero(8,0,false); 
-//     // Temporary constructors
-//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
-//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
-//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
-//     std::vector<WrappedRange*> vv;
-//     vv.push_back(R3); vv.push_back(R2); vv.push_back(R1);
-//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
-//     Res->GeneralizedJoin(vv);
-//     // it should be [2,135]
-//     dbgs()<< "Result for test 1: " ;
-//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
-//   }
+void test_GeneralizedJoin(){
+  {
+    APInt a(8,  2,false);  APInt b(8, 10,false);
+    APInt c(8,120,false);  APInt d(8,130,false);
+    APInt e(8,132,false);  APInt f(8,135,false);
+    APInt zero(8,0,false); 
+    // Temporary constructors
+    AbstractValue * R1 = dyn_cast<AbstractValue>(new WrappedRange(a,b,a.getBitWidth()));
+    AbstractValue * R2 = dyn_cast<AbstractValue>(new WrappedRange(c,d,c.getBitWidth()));
+    AbstractValue * R3 = dyn_cast<AbstractValue>(new WrappedRange(e,f,e.getBitWidth()));
+    std::vector<AbstractValue*> vv;
+    vv.push_back(R3); vv.push_back(R2); vv.push_back(R1);
+    WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
+    Res->GeneralizedJoin(vv);
+    // it should be [2,135]
+    dbgs()<< "Result for test 1: " ;
+    dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
+  }
 
-//   {
-//     APInt a(8,  2,false);  APInt b(8, 10,false);
-//     APInt c(8,120,false);  APInt d(8,130,false);
-//     APInt e(8,132,false);  APInt f(8,135,false);
-//     APInt g(8,200,false);  APInt h(8,100,false);
+  {
+    APInt a(8,   1 , false);  APInt b(8,  10 , false);
+    APInt c(8, 120 , false);  APInt d(8, 130 , false);
+    APInt e(8, 132 , false);  APInt f(8, 135 , false);
+    APInt g(8, 220 , false);  APInt h(8,  50 , false);
 
-//     APInt zero(8,0,false); 
-//     // Temporary constructors
-//     WrappedRange * R1 = new WrappedRange(a,b,a.getBitWidth());
-//     WrappedRange * R2 = new WrappedRange(c,d,c.getBitWidth());
-//     WrappedRange * R3 = new WrappedRange(e,f,e.getBitWidth());
-//     WrappedRange * R4 = new WrappedRange(g,h,g.getBitWidth());
-//     std::vector<WrappedRange*> vv;
-//     vv.push_back(R3); vv.push_back(R4); vv.push_back(R2); vv.push_back(R1);
-//     WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
-//     Res->GeneralizedJoin(vv);
-//     // it should be [2,135]
-//     dbgs()<< "Result for test 2: " ;
-//     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10,false) << "]\n";
-//   }
-// }
+    APInt zero(8, 0, false); 
+    // Temporary constructors
+    AbstractValue * R1 = dyn_cast<AbstractValue>(new WrappedRange(a,b,a.getBitWidth()));
+    AbstractValue * R2 = dyn_cast<AbstractValue>(new WrappedRange(c,d,c.getBitWidth()));
+    AbstractValue * R3 = dyn_cast<AbstractValue>(new WrappedRange(e,f,e.getBitWidth()));
+    AbstractValue * R4 = dyn_cast<AbstractValue>(new WrappedRange(g,h,g.getBitWidth()));
+    std::vector<AbstractValue*> vv;
+    vv.push_back(R3); vv.push_back(R4); vv.push_back(R2); vv.push_back(R1);
+    WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
+    Res->GeneralizedJoin(vv);
+    // it should be [220,135]
+    dbgs()<< "Result for test 2: " ;
+    dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10, false) << "]\n";
+  }
+}
 
 
 				

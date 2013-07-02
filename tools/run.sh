@@ -1,7 +1,22 @@
 #!/bin/bash
 
-# Only change the following line:
-WRAPPED_PATH="$HOME/SvnReps/UNIMELB/trunk/verification/domains/code/wrapped-intervals"
+#=======================================================================#
+# Change the following paths for clang and opt
+#=======================================================================#
+#CLANG_PATH="$HOME/bin"
+#OPT_PATH="$HOME/SvnReps/Systems/llvm/Debug+Asserts/bin"
+###
+# for my own profiling
+###
+CLANG_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
+OPT_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
+#=======================================================================#
+
+get_dir() {
+	pushd "$1" > /dev/null
+	pwd
+	popd > /dev/null
+}
 
 usage() {
 cat <<EOF
@@ -13,29 +28,35 @@ The University of Melbourne 2012.
 Usage: $0  prog[.c|.bc]  Pass [options] 
 
 Pass is the pass that we want to run: 
-  -wrapped-range-analysis        fixed-width wrapped interval analysis
-  -range-analysis                fixed-width classical interval analysis
+  -wrapped-range-analysis      fixed-width wrapped interval analysis
+  -range-analysis              fixed-width classical interval analysis
     options:
-      -widening n                n is the widening threshold (0: no widening)
-      -narrowing n               n is the number of narrowing iterations (0: no narrowing)
-      -alias                     by default, -no-aa which always return maybe. If enabled 
-                                 then -basic-aa and -globalsmodref-aa are run to be more precise
-                                 with global variables.
-      -enable-optimizations      enable LLVM optimizations
-      -inline n                  inline function calls whenever possible if the size of 
-                                 the function is less than n. (0: no inlining). 
-                                 A reasonable threshold n is, e.g., 255.
-      -instcombine               remove redundant instructions.
-                                 It can improve precision by removing problematic casting 
-                                 instructions among many other things.
-      -only-function fname       Analyze only fname rather than the whole program.            
+      -widening n              n is the widening threshold (0: no widening)
+      -narrowing n             n is the number of narrowing iterations (0: no narrowing)
+      -alias                   by default, -no-aa which always return maybe. If enabled 
+                               then -basic-aa and -globalsmodref-aa are run to be more 
+                               precise with global variables.
+      -enable-optimizations    enable LLVM optimizations
+      -inline n                inline function calls whenever possible if the size of 
+                               the function is less than n. (0: no inlining). 
+                               A reasonable threshold n is, e.g., 255.
+      -instcombine             remove redundant instructions.
+                               It can improve precision by removing problematic casting 
+                               instructions among many other things.
+
+      -only-function fname     Analyze only fname rather than the whole program.            
+      -numfuncs n              Shortcut to analyze the first n functions of the program.
+
+      -insert-ioc-traps        Compile .c program with -fcatch-undefined-ansic-behavior
+                               which generates IOC trap blocks.
+                               Note: clang version must support -fcatch-undefined-ansic-behavior
                                  
   general options:
-    -help                          print this message
-    -stats                         print stats
-    -time                          print LLVM time passes
-    -dot-cfg                       print .dot file of the LLVM IR
-    -debug                         print debugging messages
+    -help                      print this message
+    -stats                     print stats
+    -time                      print LLVM time passes
+    -dot-cfg                   print .dot file of the LLVM IR
+    -debug                     print debugging messages
 
 
 EOF
@@ -62,14 +83,23 @@ else
     fi
 fi
 
-# Compiler from C to llvm bytecode 
-FRONTEND="clang -O0 -m32"
-# llvm opt tool 
-# OPT=opt
-OPT=/home/jorge/SvnReps/Systems/llvm/Debug+Asserts/bin/opt
-# The shared libraries that contain my passes
-MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
 
+# clang 
+FRONTEND="$CLANG_PATH/clang "
+# llvm opt tool 
+OPT="$OPT_PATH/opt"
+# clang options
+FRONTEND_OPTS=" -O0 -m32 "
+FRONTEND_IOC_OPTS=" -O0 -m32 -fcatch-undefined-ansic-behavior "
+# libraries that contain my passes
+# The directory of this script
+SCRIPT_DIR="`get_dir \`dirname "${BASH_SOURCE[0]}"\``"
+WRAPPED_PATH="`get_dir $SCRIPT_DIR/..`"
+#MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
+# for my own profiling
+MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Profile/lib"
+
+COMPILE_WITH_IOC=0 
 # Input C program
 input="$1"
 # The pass that we want to run
@@ -152,6 +182,15 @@ while [ "$3" != "" ]; do
 	    shift
 	    MYPASS_OPTS="$MYPASS_OPTS -InstCombine"
 	    ;;
+	-numfuncs)
+	    shift
+	    MYPASS_OPTS="$MYPASS_OPTS -numfuncs=$3"
+	    shift
+	    ;;
+	-insert-ioc-traps)
+	    shift
+	    COMPILE_WITH_IOC=1
+	    ;;
 	*)
 	    echo -e "ERROR: option $3 not recognized.\nExecute $0 -help to see options.\n"
 	    exit 2
@@ -220,7 +259,11 @@ MYLIBRARIES="$MYLIBRARIES -load ${MYLIBRARY_PATH}/Transformations.so"
 
 # Compile the C program to llvm bytecode
 if [ $require_compilation -eq 1 ]; then
-    $FRONTEND -w $abspath_C -c -emit-llvm -o $abspath_BC
+    if [ $COMPILE_WITH_IOC -eq 1 ]; then
+	$FRONTEND $FRONTEND_IOC_OPTS -w $abspath_C -c -emit-llvm -o $abspath_BC
+    else
+	$FRONTEND $FRONTEND_OPTS -w $abspath_C -c -emit-llvm -o $abspath_BC
+    fi
 fi
 
 # Catch some errors ...

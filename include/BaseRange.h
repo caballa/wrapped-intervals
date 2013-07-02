@@ -124,23 +124,28 @@ namespace unimelb {
     virtual ~BaseRange(){}
 
     //Access methods
-    inline APInt getUB()      { return UB;}
-    inline APInt getLB()      { return LB;}
-    inline APInt getUB() const{ return UB;}
-    inline APInt getLB() const{ return LB;}
+    inline const APInt & getUB() const { return UB;}
+    inline const APInt & getLB() const { return LB;}
+    // inline APInt  getUB() const{ return UB;}
+    // inline APInt  getLB() const{ return LB;}
 
-    inline unsigned getWidth(){ return width;}
+    inline unsigned getWidth(){ 
+      assert(LB.getBitWidth() == UB.getBitWidth());
+      assert(LB.getBitWidth() == width);
+      return width;
+    }
+
     inline bool IsSigned() const { return isSigned;}
 
     inline bool IsConstantRange() const{
       if (isBot()) return false;
       if (IsTop()) return false;
-      return (getLB() == getUB());
+      return (LB == UB);
     }
 
     inline bool IsZeroRange() const{
       if (IsConstantRange()){
-	return (getLB() == 0);
+	return (LB == 0);
       }
       return false;
     }
@@ -187,21 +192,21 @@ namespace unimelb {
 	return APInt::getMinValue(width);
     }
 
-    inline bool bridge_le(unsigned Opcode, APInt a, APInt b){
+    inline bool bridge_le(unsigned Opcode, const APInt &a, const APInt &b){
       if (IsSignedCompInst(Opcode))
 	return a.sle(b);
       else
 	return a.ule(b);
     }
 
-    inline bool bridge_lt(unsigned Opcode, APInt a, APInt b){
+    inline bool bridge_lt(unsigned Opcode, const APInt &a, const APInt &b){
       if (IsSignedCompInst(Opcode))
 	return a.slt(b);
       else
 	return a.ult(b);
     }
 
-    inline bool bridge_ge(unsigned Opcode, APInt a, APInt b){
+    inline bool bridge_ge(unsigned Opcode, const APInt &a, const APInt &b){
       if (IsSignedCompInst(Opcode))
 	return a.sge(b);
       else
@@ -218,7 +223,12 @@ namespace unimelb {
       isSigned = IsSigned;
     }
 
-    inline void setWidth(unsigned Width)  { width=Width; }
+    /// Create a new pair of APInt with different width
+    inline void setZeroAndChangeWidth(unsigned width_)  {       
+      width=width_; 
+      LB = APInt(width, 0, isSigned);
+      UB = APInt(width, 0, isSigned);
+    }
 
     inline void RangeAssign(BaseRange * V) {
       setLB(V->getLB());
@@ -247,56 +257,65 @@ namespace unimelb {
           
     /// Return true if the signed intervals [lb1,ub1]
     /// and [lb2,ub2] are disjoint.
-    static bool signedIsDisjoint(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool signedIsDisjoint(const APInt &lb1, const APInt &ub1, 
+				 const APInt &lb2, const APInt &ub2){
       // is_disjoint([a,b],[c,d]) if b < c or d < a
       return (ub1.slt(lb2) || ub2.slt(lb1));
     }   
 
     /// Return true if the unsigned intervals [lb1,ub1] and
     /// [lb2,ub2] are disjoint.
-    static bool IsDisjoint(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool IsDisjoint(const APInt &lb1, const APInt &ub1, 
+			   const APInt &lb2, const APInt &ub2){
       return (ub1.ult(lb2) || ub2.ult(lb1));
     }
 
     /// is_included([a,b],[c,d]) if a>=c && b <=d
     /// a,b,c,d are signed.
-    static bool signedIsIncluded(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool signedIsIncluded(const APInt &lb1, const APInt &ub1, 
+				 const APInt &lb2, const APInt &ub2){
       return (lb1.sge(lb2) && ub1.sle(ub2));
     }
 
     /// is_included([a,b],[c,d]) if a>=c && b <=d
     /// a,b,c,d are unsigned.
-    static bool IsIncluded(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool IsIncluded(const APInt &lb1, const APInt &ub1, 
+			   const APInt &lb2, const APInt &ub2){
       return (lb1.uge(lb2) && ub1.ule(ub2));
     }
 
     /// is_overlap_right([a,b],[c,d]) if c <= b && d > b
     /// a,b,c,d are signed.
-    static bool signedIsOverlapRight(APInt lb1, APInt ub1, APInt lb2, APInt ub2){      
+    static bool signedIsOverlapRight(const APInt &lb1, const APInt &ub1, 
+				     const APInt &lb2, const APInt &ub2){      
       return (lb2.sle(ub1) && ub2.sgt(ub1));
     }
 
     /// is_overlap_right([a,b],[c,d]) if c <= b && d > b
     /// a,b,c,d are unsigned.
-    static bool IsOverlapRight(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool IsOverlapRight(const APInt &lb1, const APInt &ub1, 
+			       const APInt &lb2, const APInt &ub2){
       return (lb2.ule(ub1) && ub2.ugt(ub1));
     }
 
     /// is_overlap_left([a,b],[c,d]) if c < a && d >= a
     /// a,b,c,d are signed.
-    static bool signedIsOverlapLeft(APInt lb1, APInt ub1, APInt lb2, APInt ub2){      
+    static bool signedIsOverlapLeft(const APInt &lb1, const APInt &ub1, 
+				    const APInt &lb2, const APInt &ub2){      
       return (lb2.slt(lb1) && ub2.sge(lb1));
     }
 
     /// is_overlap_left([a,b],[c,d]) if c < a && d >= a
     /// a,b,c,d are unsigned.
-    static bool IsOverlapLeft(APInt lb1, APInt ub1, APInt lb2, APInt ub2){
+    static bool IsOverlapLeft(const APInt &lb1, const APInt &ub1,
+			      const APInt &lb2, const APInt &ub2){
       return (lb2.ult(lb1) && ub2.uge(lb1));
     }
 
     /// As IsOverlapLeft but taking the cases if signed or unsigned.
     static bool bridge_IsOverlapLeft(unsigned opCode,
-				     APInt a, APInt b, APInt c, APInt d){
+				     const APInt &a, const APInt &b, 
+				     const APInt &c, const APInt &d){
       if (opCode == ICmpInst::ICMP_ULT ||  
 	  opCode == ICmpInst::ICMP_ULE || 
 	  opCode == ICmpInst::ICMP_UGT || 
@@ -314,7 +333,8 @@ namespace unimelb {
 
     /// As IsOverlapRight but taking the cases if signed or unsigned.
     static bool bridge_IsOverlapRight(unsigned opCode,
-				      APInt a, APInt b, APInt c, APInt d){
+				      const APInt &a, const APInt &b, 
+				      const APInt &c, const APInt &d){
       if (opCode == ICmpInst::ICMP_ULT ||  
 	  opCode == ICmpInst::ICMP_ULE || 
 	  opCode == ICmpInst::ICMP_UGT || 
@@ -332,7 +352,8 @@ namespace unimelb {
 
     // As IsIncluded but considering if signed or unsigned.
     static bool bridge_IsIncluded(unsigned opCode,
-				  APInt a, APInt b, APInt c, APInt d){
+				  const APInt &a, const APInt &b, 
+				  const APInt &c, const APInt &d){
       if (opCode == ICmpInst::ICMP_ULT ||  
 	  opCode == ICmpInst::ICMP_ULE || 
 	  opCode == ICmpInst::ICMP_UGT || 
@@ -356,20 +377,20 @@ namespace unimelb {
 			const unsigned,unsigned);      
 
     // comparison operations 
-    static APInt smin(APInt x, APInt y) { return x.slt(y) ? x : y;}
-    static APInt smax(APInt x, APInt y) { return x.sgt(y) ? x : y;}
-    static APInt umin(APInt x, APInt y) { return x.ult(y) ? x : y;}
-    static APInt umax(APInt x, APInt y) { return x.ugt(y) ? x : y;}    
+    static APInt smin(const APInt &x, const APInt &y) { return x.slt(y) ? x : y;}
+    static APInt smax(const APInt &x, const APInt &y) { return x.sgt(y) ? x : y;}
+    static APInt umin(const APInt &x, const APInt &y) { return x.ult(y) ? x : y;}
+    static APInt umax(const APInt &x, const APInt &y) { return x.ugt(y) ? x : y;}    
 
   };
 
   // bitwise operations 
-  APInt minOr( APInt, APInt, APInt, APInt);
-  APInt maxOr( APInt, APInt, APInt, APInt);
-  APInt minAnd(APInt, APInt, APInt, APInt);
-  APInt maxAnd(APInt, APInt, APInt, APInt);
-  APInt minXor(APInt, APInt, APInt, APInt);
-  APInt maxXor(APInt, APInt, APInt, APInt);
+  APInt minOr( const APInt&, const APInt&, const APInt&, const APInt&);
+  APInt maxOr( const APInt&, const APInt&, const APInt&, const APInt&);
+  APInt minAnd(APInt, const APInt&,APInt, const APInt&);
+  APInt maxAnd(const APInt&, APInt, const APInt&, APInt);
+  APInt minXor(const APInt&, const APInt&, const APInt&, const APInt&);
+  APInt maxXor(const APInt&, const APInt&, const APInt&, const APInt&);
 
   void unsignedOr(BaseRange  *, BaseRange *,APInt &lb, APInt &ub); 
   void unsignedAnd(BaseRange *, BaseRange *,APInt &lb, APInt &ub); 

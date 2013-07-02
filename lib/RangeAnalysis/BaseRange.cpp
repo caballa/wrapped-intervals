@@ -144,7 +144,8 @@ int64_t minOr_int64t(int64_t a, int64_t b, int64_t c, int64_t d){
   return a | c;
 }
 
-APInt unimelb::minOr(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+minOr(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   APInt res(a.getBitWidth(), 
 	    minOr_int64t(a.getSExtValue(), b.getSExtValue(), 
 			 c.getSExtValue(), d.getSExtValue()));
@@ -180,7 +181,8 @@ int64_t maxOr_int64t(int64_t a, int64_t b, int64_t c, int64_t d){
   return b | d;
 }
 
-APInt unimelb::maxOr(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+maxOr(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   APInt res(a.getBitWidth(), 
 	    maxOr_int64t(a.getSExtValue(), b.getSExtValue(), 
 			 c.getSExtValue(), d.getSExtValue()));
@@ -193,7 +195,8 @@ APInt unimelb::maxOr(APInt a, APInt b, APInt c, APInt d){
 /// value is less or equal than its corresponding upper bound we are
 /// done and the result is a & c. If not, we try with the other
 /// value. If it doesn't work neither we continue with the scan.
-APInt unimelb::minAnd(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+minAnd(APInt a, const APInt &b, APInt c, const APInt &d){
   APInt m =   APInt::getOneBitSet(a.getBitWidth(), a.getBitWidth()-1);
   while (m != 0){
     if ((~a & ~c & m).getBoolValue()){
@@ -221,7 +224,8 @@ APInt unimelb::minAnd(APInt a, APInt b, APInt c, APInt d){
 /// corresponding lower bound we are done and the result is b & d. If
 /// the change cannot be done we try with the other. If not yet, we
 /// continue with the scan.
-APInt unimelb::maxAnd(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+maxAnd(const APInt &a, APInt b, const APInt &c, APInt d){
   APInt m =   APInt::getOneBitSet(a.getBitWidth(), a.getBitWidth()-1);
   while (m != 0){
     if ((b & ~d & m).getBoolValue()){
@@ -246,11 +250,13 @@ APInt unimelb::maxAnd(APInt a, APInt b, APInt c, APInt d){
 }
 
 
-APInt unimelb::minXor(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+minXor(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   return (unimelb::minAnd(a,b,~d,~c) | unimelb::minAnd(~b,~a,c,d));
 }
 
-APInt unimelb::maxXor(APInt a, APInt b, APInt c, APInt d){
+APInt unimelb::
+maxXor(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
   return (unimelb::maxOr(APInt::getNullValue(a.getBitWidth()),
 			 unimelb::maxAnd(a,b,~d,~c),
 			 APInt::getNullValue(a.getBitWidth()),

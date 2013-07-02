@@ -82,7 +82,14 @@ namespace unimelb {
     /// Return true if the variable is a constant.
     inline bool      isConstant() const { return (var == NULL); }
     /// Return true if the abstract domain is a lattice.
-    inline bool      isLattice() const { return true /*IsLattice*/; }
+    inline bool      isLattice() const { 
+      /// Currently, we return always true even if the underlying
+      /// domain is not actually a lattice. This is sound but it may
+      /// have negative consequences in terms of precision and
+      /// termination during the fixpoint computation. For now, we
+      /// take the risk.
+      return true /*IsLattice*/; 
+    }
     /// Return basic block associated with the variable (if fixpointSSI)
     inline BasicBlock* getBasicBlock() { return B;}
 
