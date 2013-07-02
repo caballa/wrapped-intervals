@@ -128,29 +128,61 @@ namespace unimelb {
     virtual inline void setLB(uint64_t lb){  BaseRange::setLB(lb); }
     virtual inline void setUB(uint64_t ub){  BaseRange::setUB(ub); }
 
-    /// Needed for presentation. Just to make sure that we have fair
-    /// comparisons with other analyses.
+    /// Used to compare precision with other analyses
     inline void normalize(){
       if (IsTop()) return;
       if (isBot()) return;
-      if (isSigned){
-    	if (getLB() == APInt::getSignedMinValue(width) &&
-    	    getUB() == APInt::getSignedMaxValue(width)){
-    	makeTop();
-    	return;
-    	}
-      }
-      else{
-    	if (getLB() == APInt::getMinValue(width) &&
-    	    getUB() == APInt::getMaxValue(width)){
-    	  makeTop();
-    	  return;
-    	}
+      normalizeTop();
+      // if (isSigned){
+      // 	if (getLB() == APInt::getSignedMinValue(width) &&
+      // 	    getUB() == APInt::getSignedMaxValue(width)){
+      // 	makeTop();
+      // 	return;
+      // 	}
+      // }
+      // else{
+      // 	if (getLB() == APInt::getMinValue(width) &&
+      // 	    getUB() == APInt::getMaxValue(width)){
+      // 	  makeTop();
+      // 	  return;
+      // 	}
+      // }
+    }
+
+    inline void normalizeTop(){
+      if (isBot()) return;
+      if (getLB() == getUB()+1) { 
+	makeTop();
+	return;
       }
     }
 
+    // For comparison with other analyses.
+    inline uint64_t Cardinality() const {
+      if (isBot()) return 0;
+      if (IsTop()) {
+	APInt card = APInt::getMaxValue(width);
+	return card.getZExtValue() + 1;
+      }
+	
+      APInt x = getLB();
+      APInt y = getUB();
+      APInt card = (y - x + 1);
+
+      return card.getZExtValue();
+    }
+
     // Standard abstract operations.
-    virtual bool isGammaSingleton() const;
+
+    /// Return true if | \gamma(this) | is one.
+    virtual bool isGammaSingleton() const{
+      return (Cardinality() == 1);
+      // if (isBot() || IsTop()) return false;
+      // APInt lb  = getLB();
+      // APInt ub  = getUB();
+      // return (lb == ub);
+    }
+
     virtual bool isBot() const;
     virtual bool IsTop() const;
     virtual void makeBot();

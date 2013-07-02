@@ -67,7 +67,7 @@ bool Range::isCrossingNorthPole(Range * S) {
 /// Auxiliary method to cut at the south pole to perform signed
 /// versions of the bitwise logical operations.
 std::vector<RangePtr> 
-ssplit(APInt x, APInt y, unsigned width, bool IsSigned){
+ssplit(const APInt &x, const APInt &y, unsigned width, bool IsSigned){
 
   // Temporary wrapped interval for south pole
   APInt SP_lb = APInt::getMaxValue(width); // 111...1
@@ -89,14 +89,6 @@ ssplit(APInt x, APInt y, unsigned width, bool IsSigned){
     res.push_back(s);
   }
   return res;  
-}
-
-/// Return true if the cardinality of the gamma function is one.
-bool Range::isGammaSingleton() const {
-  if (isBot() || IsTop()) return false;
-  APInt lb  = getLB();
-  APInt ub  = getUB();
-  return (lb == ub);
 }
 
 /// Return true if the range is empty 
@@ -153,23 +145,6 @@ Range convertTopToNumInterval(Range *Op, bool IsSigned){
     return Tmp;
   }      
   return *Op;
-}
-
-
-void normalizeTop(Range * &I){
-
-  if (I->isBot()) 
-    return;
-  
-  if (I->getLB() == I->getUB()+1) { 
-    I->makeTop();
-    return;
-  }
-
-  // if ( ((y-x)+1) == APInt::getMaxValue(x.getBitWidth())){ 
-  //   I->makeTop();
-  //   return;
-  // }
 }
 
 /// Return true if the range of this is included in the the range of V
@@ -233,6 +208,7 @@ void Range::join(AbstractValue * V){
   }
     
  END:
+  normalizeTop();
   DEBUG(dbgs() << *this << "\n");
 }
 
@@ -1032,7 +1008,7 @@ void Range:: DoMultiplication(bool IsSignedOp,
 /// Auxiliary method to remove [0,0]. This method returns either one 
 /// interval [a,b] or the set of intervals { [a,-1], [1, b] }.
 std::vector<RangePtr> 
-purgeZero(APInt x, APInt y, unsigned width, bool IsSignedOp){
+purgeZero(const APInt &x, const APInt &y, unsigned width, bool IsSignedOp){
   bool IsSigned=true;
 
   // Temporary wrapped interval for zero
@@ -1051,14 +1027,22 @@ purgeZero(APInt x, APInt y, unsigned width, bool IsSignedOp){
       }
     }
     else{
-      // Split into two intervals
-      APInt plusOne(width, 1, IsSigned);          // 000...1 
-      APInt minusOne = APInt::getMaxValue(width); // 111...1
-      RangePtr s1(new Range(x,minusOne,width,IsSigned)); // [x, 111....1]
-      RangePtr s2(new Range(plusOne,y,width,IsSigned)); // [000...1,  y] 
-      //dbgs()<< "{" << *(s1.get()) << "," << *(s2.get()) << "}\n";
-      res.push_back(s1);
-      res.push_back(s2);
+      if (y == 0){
+	// If interval is e.g., [1000,0000] then we keep one interval
+	APInt minusOne = APInt::getMaxValue(width); // 111...1
+	RangePtr s(new Range(x,minusOne,width,IsSigned)); // [x, 111....1]
+	res.push_back(s);	
+      }
+      else{
+	// Split into two intervals
+	APInt plusOne(width, 1, IsSigned);          // 000...1 
+	APInt minusOne = APInt::getMaxValue(width); // 111...1
+	RangePtr s1(new Range(x,minusOne,width,IsSigned)); // [x, 111....1]
+	RangePtr s2(new Range(plusOne,y,width,IsSigned)); // [000...1,  y] 
+	//dbgs()<< "{" << *(s1.get()) << "," << *(s2.get()) << "}\n";
+	res.push_back(s1);
+	res.push_back(s2);
+      }
     }
   }
   else{  
@@ -1069,11 +1053,11 @@ purgeZero(APInt x, APInt y, unsigned width, bool IsSignedOp){
   return res;
 }
 
-inline bool APINT_SIGNED_LESS(APInt a, APInt b){
+inline bool APINT_SIGNED_LESS(const APInt &a, const APInt &b){
   return a.slt(b);
 }
     
-inline bool APINT_UNSIGNED_LESS(APInt a, APInt b){
+inline bool APINT_UNSIGNED_LESS(const APInt &a, const APInt &b){
   return a.ult(b);
 }
 
@@ -1154,7 +1138,7 @@ void Range::DoDivision(bool IsSignedOp,
 ///
 /// SRem can produce overflow if MININT urem -1.
 ///
-void DoRemCases(APInt a, APInt b, APInt c, APInt d, 
+void DoRemCases(const APInt &a, const APInt &b, const APInt &c, const APInt &d, 
 		unsigned width, bool IsSigned,
 		APInt &lb, APInt &ub){
   
@@ -1330,99 +1314,97 @@ DoCast(Range *LHS, Range *RHS,
     checkCastingOp(srcTy,srcWidth,destTy,destWidth,OpCode,RHS->getWidth());
   
   //  Perform casting                             
-  LHS->setWidth(destWidth);        
-  
-  // Simple cases first: bottom and top
-  if (RHS->isBot()){
-    LHS->makeTop(); // be conservative
-    return;
-  }    
+  LHS->setZeroAndChangeWidth(destWidth);        
+  // gross fix: RHS is actually top but IsTop does not detect it
+  RHS->normalizeTop();  
 
-  if (RHS->IsTop()){
+  // Simple cases first: bottom and top
+  if (RHS->isBot())
+    LHS->makeTop(); // be conservative
+  else if (RHS->IsTop()){
     LHS->makeTop();
     IsOverflow=false;
-    return;
   }
-
-  switch(OpCode) {
-  case Instruction::Trunc:
-    if (IsTruncateOverflow(RHS,destWidth)){
-      DEBUG(dbgs() << "\tCast: truncating an integer that does not fit in the destination " 
-	    << destWidth << " bits.\n");	
-      IsOverflow=true;
-    }
-    else{
-      IsOverflow=false;
-      LHS->setUB(RHS->getUB().trunc(destWidth)); 
-      LHS->setLB(RHS->getLB().trunc(destWidth)); 	  
+  else{
+    switch(OpCode) {
+    case Instruction::Trunc:
+      if (IsTruncateOverflow(RHS,destWidth)){
+	DEBUG(dbgs() << "\tCast: truncating an integer that does not fit in the destination " 
+	      << destWidth << " bits.\n");	
+	IsOverflow=true;
+      }
+      else{
+	IsOverflow=false;
+	LHS->setUB(RHS->getUB().trunc(destWidth)); 
+	LHS->setLB(RHS->getLB().trunc(destWidth)); 	  
 #ifdef DEBUG_CAST_OP
-      dbgs() << "Trunc(";
+	dbgs() << "Trunc(";
+	RHS->printRange(dbgs());
+	dbgs() << "," << destWidth << ")=";
+	RHS->printRange(dbgs());
+	dbgs() << "\n";
+#endif 
+      }
+      break;
+    case Instruction::SExt:
+      //// If we force a signed view (default) then we cannot cross the
+      //// north pole
+      //// 
+      // if (isCrossingNorthPole(RHS)){
+      //   // dbgs() << "Crossing north pole!\n";
+      //   // If the interval crosses the north pole then we go to top
+      //   // using srcWidth's and then we signed extend to destWidth
+      //   LHS->setLB(APInt::getSignedMinValue(srcWidth).sext(destWidth));
+      //   LHS->setUB(APInt::getSignedMaxValue(srcWidth).sext(destWidth));
+      // }
+      // else{
+      // Apply sext
+      LHS->setLB(RHS->getLB().sext(destWidth));
+      LHS->setUB(RHS->getUB().sext(destWidth));    
+      // }
+#ifdef DEBUG_CAST_OP
+      dbgs() << "SExt(";
       RHS->printRange(dbgs());
       dbgs() << "," << destWidth << ")=";
       RHS->printRange(dbgs());
       dbgs() << "\n";
 #endif 
-    }
-    break;
-  case Instruction::SExt:
-    //// If we force a signed view (default) then we cannot cross the
-    //// north pole
-    //// 
-    // if (isCrossingNorthPole(RHS)){
-    //   // dbgs() << "Crossing north pole!\n";
-    //   // If the interval crosses the north pole then we go to top
-    //   // using srcWidth's and then we signed extend to destWidth
-    //   LHS->setLB(APInt::getSignedMinValue(srcWidth).sext(destWidth));
-    //   LHS->setUB(APInt::getSignedMaxValue(srcWidth).sext(destWidth));
-    // }
-    // else{
-    // Apply sext
-    LHS->setLB(RHS->getLB().sext(destWidth));
-    LHS->setUB(RHS->getUB().sext(destWidth));    
-    // }
+      break;
+    case Instruction::ZExt:
+      /// If we force a signed view (default) then we can cross the
+      /// south pole.
+      if (isCrossingSouthPole(RHS)){
+	// If the interval crosses the south pole then we go to top
+	// using srcWidth's and then we unsigned extend to destWidth
+	LHS->setLB(APInt::getNullValue(srcWidth).zext(destWidth));
+	LHS->setUB(APInt::getMaxValue(srcWidth).zext(destWidth));
+      }
+      else{
+	// Apply zext 
+	LHS->setLB(RHS->getLB().zext(destWidth));
+	LHS->setUB(RHS->getUB().zext(destWidth));    
+      }
 #ifdef DEBUG_CAST_OP
-    dbgs() << "SExt(";
-    RHS->printRange(dbgs());
-    dbgs() << "," << destWidth << ")=";
-    RHS->printRange(dbgs());
-    dbgs() << "\n";
+      dbgs() << "ZExt(";
+      RHS->printRange(dbgs());
+      dbgs() << "," << destWidth << ")=";
+      RHS->printRange(dbgs());
+      dbgs() << "\n";
 #endif 
-    break;
-  case Instruction::ZExt:
-    /// If we force a signed view (default) then we can cross the
-    /// south pole.
-    if (isCrossingSouthPole(RHS)){
-      // If the interval crosses the south pole then we go to top
-      // using srcWidth's and then we unsigned extend to destWidth
-      LHS->setLB(APInt::getNullValue(srcWidth).zext(destWidth));
-      LHS->setUB(APInt::getMaxValue(srcWidth).zext(destWidth));
-    }
-    else{
-      // Apply zext 
-      LHS->setLB(RHS->getLB().zext(destWidth));
-      LHS->setUB(RHS->getUB().zext(destWidth));    
-    }
-#ifdef DEBUG_CAST_OP
-    dbgs() << "ZExt(";
-    RHS->printRange(dbgs());
-    dbgs() << "," << destWidth << ")=";
-    RHS->printRange(dbgs());
-    dbgs() << "\n";
-#endif 
-    break;
-  case Instruction::BitCast:
-    assert(srcWidth == destWidth && 
-	   "ERROR: violation of BitCast precondition");
-    // Do nothing: assign rhs to lhs
-    LHS->setLB(RHS->getLB());
-    LHS->setUB(RHS->getUB());    
-    break;
-  default:
-    assert(false && "ERROR: unknown instruction in BasicCast");
-  }  
-
+      break;
+    case Instruction::BitCast:
+      assert(srcWidth == destWidth && 
+	     "ERROR: violation of BitCast precondition");
+      // Do nothing: assign rhs to lhs
+      LHS->setLB(RHS->getLB());
+      LHS->setUB(RHS->getUB());    
+      break;
+    default:
+      assert(false && "ERROR: unknown instruction in BasicCast");
+    }  
+  } 
 #ifdef CHECK_WELLFORMED 
-    CheckIntervalIsWellFormed(LHS,"DoCast");
+  CheckIntervalIsWellFormed(LHS,"DoCast");
 #endif
 }
 
@@ -1675,7 +1657,7 @@ void Range::DoLogicalBitwise(Range *LHS, Range *Op1, Range *Op2,
   } // end switch  
 
   // Important normalization
-  normalizeTop(LHS);
+  LHS->normalizeTop();
 }
 
 // Return true if S is crossing the south pole (i.e., from 111...1 to

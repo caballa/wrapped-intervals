@@ -30,43 +30,66 @@
 using namespace llvm;
 using namespace unimelb;
 
-cl::opt<unsigned>  widening("widening",
-			     cl::init(3),
-			     cl::Hidden,
-		             cl::desc("Widening threshold (0: no widening)")); //!< User option to choose widening threshold.
+cl::opt<unsigned>  
+widening("widening",
+	 cl::init(3),
+	 cl::Hidden,
+	 //!< User option to choose widening threshold.
+	 cl::desc("Widening threshold (0: no widening)")); 
 
-cl::opt<unsigned>  narrowing("narrowing",
-			     cl::init(1),
-			     cl::Hidden,
-		             cl::desc("Narrowing iterations (0: no narrowing)")); //!< User option to choose narrowing.
+cl::opt<unsigned>  
+narrowing("narrowing",
+	  cl::init(1),
+	  cl::Hidden,
+	  //!< User option to choose narrowing.
+	  cl::desc("Narrowing iterations (0: no narrowing)")); 
 
-cl::opt<bool> enableOptimizations("enable-optimizations", 
-				  cl::Hidden,
-				  cl::desc("Enable LLVM optimizations (default = false)"),
-				  cl::init(false)); //!< User option to run LLVM optimizations.
+cl::opt<bool> 
+enableOptimizations("enable-optimizations", 
+		    cl::Hidden,
+		    cl::desc("Enable LLVM optimizations (default = false)"),
+		    //!< User option to run LLVM optimizations.
+		    cl::init(false)); 
 
-cl::opt<bool> instCombine("InstCombine", 
-			  cl::Hidden,
-			  cl::desc("Enable -instcombine LLVM pass (default = false)"),
-			  cl::init(false)); //!< User option to run -instcombine.
+cl::opt<bool> 
+instCombine("InstCombine", 
+	    cl::Hidden,
+	    cl::desc("Enable -instcombine LLVM pass (default = false)"),
+	    //!< User option to run -instcombine.
+	    cl::init(false)); 
 
-cl::opt<unsigned> Inline("Inline", 
-			 cl::init(0),
-			 cl::Hidden,
-			 cl::desc("Enable inlining of functions (default = 0)")); //!< User option to inline functions.
+cl::opt<unsigned> 
+Inline("Inline", 
+       cl::init(0),
+       cl::Hidden,
+       //!< User option to inline functions.
+       cl::desc("Enable inlining of functions (default = 0)")); 
 
-cl::opt<string> runOnlyFunction("only-function", 
-			      cl::desc("Specify function name"), 
-			      cl::value_desc(""));
+cl::opt<string> 
+runOnlyFunction("only-function", 
+		cl::desc("Specify function name"), 
+		cl::value_desc(""));
 
-// To reproduce numbers closer to APLAS'12 submission
+cl::opt<int> 
+numFuncs("numfuncs", 
+       cl::init(-1),
+       cl::Hidden,
+       cl::desc("Number of functions to be analyzed (default = -1, all)")); 
+
+// To reproduce numbers closer to APLAS'12 submission.
+// Although this is not possible anymore if we compile programs with
+// option -fcatch-undefined-ansic-behavior for running IOC.
 #define REPRODUCE_APLAS12
 // For range analysis
 #define SIGNED_RANGE_ANALYSIS true
-// For printing more information
-#define MORE_COMPARISON_DETAILS
+// For verbose mode
+//#define VERBOSE
+// Count a difference if the precision improvement is strictly greater
+// than K. The value of K should be defined in terms of cardinality of
+// the result of gamma function.
+#define PRECISION_TOLERANCE 0
 // For printing analysis results
-#define PRINT_RESULTS
+//#define PRINT_RESULTS
 
 namespace unimelb {
 
@@ -74,7 +97,9 @@ namespace unimelb {
   inline void addPass(PassManager &PM, Pass *P) {
     // Add the pass to the pass manager...
     PM.add(P);  
+#ifdef VERBOSE
     dbgs() << "[RangeAnalysis]: running pass " <<  P->getPassName() << "\n";
+#endif 
   }
   
   /// Add all LLVM passes into the pass manager.
@@ -187,8 +212,8 @@ namespace unimelb {
 
   char RangeTransformationPass::ID = 0;
   static RegisterPass<RangeTransformationPass> YY("range-transformations",
-						  "Transformations needed by the variants of Range Analyses",
-						  false,false);
+						  "UNIMELB program transformations",
+						  false, false);
 
 
   /// Classical fixed-width range analysis
@@ -196,7 +221,9 @@ namespace unimelb {
   private:
     bool IsSigned;
   public:
-    RangeAnalysis(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA,  bool isSigned): 
+    RangeAnalysis(Module *M, 
+		  unsigned WL, unsigned NL, 
+		  AliasAnalysis *AA,  bool isSigned): 
       FixpointSSI(M,WL,NL,AA,isSigned){
       // Here if we want a signed or unsigned analysis
       IsSigned=isSigned;
@@ -206,26 +233,21 @@ namespace unimelb {
     virtual AbstractValue* initAbsValBot(Value *V){
       Range * R = new Range(V,IsSigned);
       R->makeBot();
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsValTop(Value *V){
       Range * R = new Range(V,IsSigned);
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsIntConstant(ConstantInt *C){
       Range * R = new Range(C, C->getBitWidth(),IsSigned);
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsValIntConstant(Value *V, ConstantInt *C){
       Range * RV = new Range(V,IsSigned);
-      Range * RC = new Range(C, C->getBitWidth(), IsSigned);
+      Range RC(C, C->getBitWidth(), IsSigned);
       RV->makeBot();
-      RV->join(RC);      
-      delete RC;
-      assert(RV);
+      RV->join(&RC);      
       return RV;
     }
   };
@@ -234,34 +256,31 @@ namespace unimelb {
   /// Wrapped Interval Analysis
   class WrappedRangeAnalysis: public FixpointSSI {
   public:
-    WrappedRangeAnalysis(Module *M, unsigned WL, unsigned NL, AliasAnalysis *AA): 
+    WrappedRangeAnalysis(Module *M, 
+			 unsigned WL, unsigned NL, 
+			 AliasAnalysis *AA): 
       FixpointSSI(M,WL,NL,AA){}
 
     // Methods that allows Fixpoint creates Range objects
     virtual AbstractValue* initAbsValBot(Value *V){
       WrappedRange * R = new WrappedRange(V);
       R->makeBot();
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsValTop(Value *V){
       WrappedRange * R = new WrappedRange(V);
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsIntConstant(ConstantInt *C){
       WrappedRange * R = new WrappedRange(C, C->getBitWidth());
-      assert(R);
       return R;
     }
     virtual AbstractValue* initAbsValIntConstant(Value *V, ConstantInt *C){
       WrappedRange * RV = new WrappedRange(V);
-      WrappedRange * RC = new WrappedRange(C, C->getBitWidth());
+      WrappedRange RC(C, C->getBitWidth());
       assert(RV);
-      assert(RC);
       RV->makeBot();
-      RV->join(RC);      
-      delete RC;
+      RV->join(&RC);      
       return RV;
     }
   };
@@ -294,6 +313,40 @@ namespace unimelb {
     AU.setPreservesAll(); // Does not transform code
   }    
 
+  template<typename Analysis>
+  void runAnalysis(Module &M, CallGraph *CG, Analysis a){
+    if (runOnlyFunction != ""){
+      Function *F = M.getFunction(runOnlyFunction); 
+      if (!F){ 
+	dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+	return;
+      }
+      a.init(F);
+      a.solve(F);
+#ifdef  PRINT_RESULTS 	  
+      a.printResultsFunction(F,dbgs());
+#endif 
+    }
+      else{
+	int k=0;
+	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
+	  if (IsAnalyzable(F,*CG)){
+	    if ( (numFuncs > 0) && (k > numFuncs)) 
+	      break;
+
+	    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
+	    a.init(F);
+	    a.solve(F);
+#ifdef  PRINT_RESULTS 	  
+	    //a.printResultsGlobals(dbgs());
+	    a.printResultsFunction(F,dbgs());
+#endif 
+	    k++;
+	  }
+	}
+      }
+  }
+
   /// To run an intraprocedural range analysis.
   struct RangePass : public ModulePass{
     static char ID; //!< Pass identification, replacement for typeid    
@@ -306,33 +359,8 @@ namespace unimelb {
       dbgs() <<"\n===-------------------------------------------------------------------------===\n" ;  
       dbgs() << "               Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n" ;      
-      RangeAnalysis Analysis(&M, widening , narrowing , AA, SIGNED_RANGE_ANALYSIS);
-      
-      if (runOnlyFunction != ""){
-	Function *F = M.getFunction(runOnlyFunction); 
-	if (!F){ 
-	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
-	  return false;
-	}
-	Analysis.init(F);
-	Analysis.solve(F);
-#ifdef  PRINT_RESULTS 	  
-	Analysis.printResultsFunction(F,dbgs());
-#endif  /*PRINT_RESULTS*/
-      }
-      else{
-	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
-	if (IsAnalyzable(F,*CG)){
-	    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	    Analysis.init(F);
-	    Analysis.solve(F);
-#ifdef  PRINT_RESULTS 	  
-	    //Analysis.printResultsGlobals(dbgs());
-	    Analysis.printResultsFunction(F,dbgs());
-#endif  /*PRINT_RESULTS*/
-	  }
-	}
-      }
+      RangeAnalysis a(&M, widening , narrowing , AA, SIGNED_RANGE_ANALYSIS);
+      runAnalysis(M,CG,a);
       return false;
     }
 
@@ -354,32 +382,8 @@ namespace unimelb {
       dbgs() <<"\n===-------------------------------------------------------------------------===\n";  
       dbgs() << "               Wrapped Range Integer Variable Analysis \n";
       dbgs() <<"===-------------------------------------------------------------------------===\n";      
-      WrappedRangeAnalysis Analysis(&M, widening , narrowing , AA);
-      if (runOnlyFunction != ""){
-	Function *F = M.getFunction(runOnlyFunction); 
-	if (!F){
-	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
-	  return false;
-        }
-	Analysis.init(F);
-	Analysis.solve(F);
-#ifdef  PRINT_RESULTS 	  
-	Analysis.printResultsFunction(F,dbgs());
-#endif  /*PRINT_RESULTS*/
-      }
-      else{
-	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
-	  if (IsAnalyzable(F,*CG)){
-	    DEBUG(dbgs() << "------------------------------------------------------------------------\n");
-	    Analysis.init(F);
-	    Analysis.solve(F);
-#ifdef  PRINT_RESULTS 	  
-	    //Analysis.printResultsGlobals(dbgs());
-	    Analysis.printResultsFunction(F,dbgs());
-#endif  /*PRINT_RESULTS*/
-	  }
-	}
-      }
+      WrappedRangeAnalysis a(&M, widening , narrowing , AA);
+      runAnalysis(M,CG,a);
       return false;
     }
 
@@ -399,59 +403,54 @@ namespace unimelb {
 					    "Fixed-Width Wrapped Integer Range Analysis",
 					    false,false);
 
+  ////////////////////////////////////////////////////////////////////
+  ///               PASSES FOR PAPER EXPERIMENTS
+  ////////////////////////////////////////////////////////////////////
 
   /// This class runs -range-analysis and -wrapped-range-analysis
   /// passes and gather some numbers regarding precision.
-  class generateStatsForPaper : public ModulePass{
-    typedef enum {ORD_EQ = 0, ORD_LEQ = 1, ORD_GEQ =2, ORD_NEQ=3} TORD;    
+  class runPrecComparison : public ModulePass{
   public:
     // Pass identification, replacement for typeid    
     static char ID; 
     /// Constructor of the class.
-    generateStatsForPaper() :  ModulePass(ID), IsAllSigned(SIGNED_RANGE_ANALYSIS),       
-			       NumTotal(0), NumOfSame(0), NumOfDifferent(0), 
-			       NumUnWrappedIsBetter(0), NumWrappedIsBetter1(0), 
-			       NumWrappedIsBetter2(0), 
-			       NumOfIncomparable(0), NumOfTrivial(0) { }
+    runPrecComparison() :  ModulePass(ID), IsAllSigned(SIGNED_RANGE_ANALYSIS),       
+			   NumTotal(0), NumOfSame(0), NumOfDifferent(0), 
+			   NumUnWrappedIsBetter(0), NumWrappedIsBetter1(0), 
+			   NumWrappedIsBetter2(0), 
+			   NumOfIncomparable(0), NumOfTrivial(0){ }
     /// Destructor of the class.
-    ~generateStatsForPaper(){}
-    
+    ~runPrecComparison(){}
+
     virtual bool runOnModule(Module &M){
      
       AliasAnalysis *AA = &getAnalysis<AliasAnalysis>(); 
       CallGraph     *CG = &getAnalysis<CallGraph>();
 
-      RangeAnalysis Intervals(&M, widening, narrowing, AA, SIGNED_RANGE_ANALYSIS);
-      WrappedRangeAnalysis WrappedIntervals(&M, widening, narrowing,  AA);
+      RangeAnalysis Unwrapped(&M, widening, narrowing, AA, SIGNED_RANGE_ANALYSIS);
+      WrappedRangeAnalysis Wrapped(&M, widening, narrowing,  AA);
       if (runOnlyFunction != ""){
 	Function *F = M.getFunction(runOnlyFunction); 
 	if (!F){
 	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
 	  return false;
 	}
-	dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
-	dbgs() << "----------------   running Range Analysis ... -----------------------\n";
-	Intervals.init(F);
-	Intervals.solve(F);
-	dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
-	WrappedIntervals.init(F);
-	WrappedIntervals.solve(F);
-	compareAnalysesOfFunction(Intervals, WrappedIntervals);
+	else
+	  runAnalyses(Unwrapped, "Range Analysis", 
+		      Wrapped  , "Wrapped Range Analysis", F);
       }
       else{
+	int k =0;
 	for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
 	  if (IsAnalyzable(F,*CG)){
-	    dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
-	    dbgs() << "----------------   running Range Analysis ... -----------------------\n";
-	    Intervals.init(F);
-	    Intervals.solve(F);
-	    dbgs() << "----------------   running Wrapped Range Analysis ... ---------------\n";
-	    WrappedIntervals.init(F);
-	    WrappedIntervals.solve(F);
-	    // Gather statistics after the analysis of the function.
-	    // After than, each analysis will cleanup *all* their
-	    // datastructures.
-	    compareAnalysesOfFunction(Intervals, WrappedIntervals);
+	    if ( (numFuncs > 0) && (k > numFuncs)) 
+	      break;
+	    Unwrapped.init(F);
+	    Unwrapped.solve(F);
+	    Wrapped.init(F);
+	    Wrapped.solve(F);
+	    compareAnalysesOfFunction(Unwrapped,Wrapped);
+	    k++;
 	  }
 	} // end for
       }
@@ -473,24 +472,47 @@ namespace unimelb {
     unsigned NumWrappedIsBetter2; // neither was top and wrapped is more precise.
     unsigned NumOfIncomparable;
     unsigned NumOfTrivial;
+    
+    template<typename Analysis1, typename Analysis2>
+    void runAnalyses(Analysis1 a1, std::string a1_StrName,
+		     Analysis2 a2, std::string a2_StrName, Function *F){
 
-    void compareAnalysesOfFunction(const RangeAnalysis &Intervals,
-				   const WrappedRangeAnalysis &WrappedIntervals){
+#ifdef  VERBOSE
+	dbgs() << "---------------- Function " << F->getName() << "---------------------\n";
+#endif 
+
+#ifdef  VERBOSE
+	dbgs() << "=== running  " << a1_StrName   << " ... ===\n";
+#endif 
+	a1.init(F);
+	a1.solve(F);
+
+#ifdef  VERBOSE
+	dbgs() << "=== running  " << a2_StrName   << " ... ===\n";
+#endif
+	a2.init(F);
+	a2.solve(F);
+
+	compareAnalysesOfFunction(a1, a2);
+    }
+
+    void compareAnalysesOfFunction(const RangeAnalysis &Unwrapped,
+				   const WrappedRangeAnalysis &Wrapped){
 
       // We cannot assume a particular order of the entries since LLVM
       // can generate different orders
-      AbstractStateTy IntervalMap         = Intervals.getValMap();
-      AbstractStateTy WrappedIntervalMap  = WrappedIntervals.getValMap();     
+      AbstractStateTy UnwrappedMap         = Unwrapped.getValMap();
+      AbstractStateTy WrappedMap  = Wrapped.getValMap();     
       // This is expensive because is n*m where n,m sizes of the two
       // hash tables. Most of the time, n is equal to m.
       typedef AbstractStateTy::iterator It;
-      for (It B=IntervalMap.begin(), E=IntervalMap.end(); B != E; ++B){
+      for (It B=UnwrappedMap.begin(), E=UnwrappedMap.end(); B != E; ++B){
 	if (!B->second){
 	  continue;
 	}
 	if (Range * I1 = dyn_cast<Range>(B->second)){
 	  if (I1 && (!I1->isConstant())){
-	    AbstractValue *AbsVal =WrappedIntervalMap[B->first];
+	    AbstractValue *AbsVal =WrappedMap[B->first];
 	    assert(AbsVal);
 	    WrappedRange *I2 = dyn_cast<WrappedRange>(AbsVal);
 	    assert(I2);
@@ -502,15 +524,12 @@ namespace unimelb {
     }
 
     void compareTwoIntervals(Range *I1, WrappedRange* I2, bool isSigned){
-      // WrappedRange normalizes different representations of top but
-      // Range does not.
-      I1->normalize();
-      assert(I1);
-      assert(I2);
+      assert(I1); assert(I1->getWidth() == I2->getWidth());
+      assert(I2); assert(I1->getValue() == I2->getValue());
       
+      I1->normalize();
+      I2->normalize();
       NumTotal++;
-      assert(I1->getWidth() == I2->getWidth());
-      assert(I1->getValue() == I2->getValue());
 
       if (I1->IsTop() && I2->IsTop()){
 	NumOfTrivial++;
@@ -521,114 +540,351 @@ namespace unimelb {
 	NumOfTrivial++;
 	return;
       }
-	    
+            
+      uint64_t val_I1 = I1->Cardinality();
+      uint64_t val_I2 = I2->Cardinality();
+      uint64_t diff;
+      if (val_I1 > val_I2)
+	diff = val_I1 - val_I2;
+      else
+	diff = val_I2 - val_I1;
+
+      if (diff <= PRECISION_TOLERANCE){
+      	NumOfSame++;
+      	return;
+      }
+
       if (I1->IsTop() && !I2->IsTop()){
-#ifdef MORE_COMPARISON_DETAILS
-	dbgs() << "Wrapped interval won: ";
+#ifdef VERBOSE
+	dbgs() << "Wrapped more precise: ";
 	I2->print(dbgs());
-	dbgs() << " better than ";
+	dbgs() << " < ";
 	I1->print(dbgs());
 	dbgs() << "\n";
-#endif /*MORE_COMPARISON_DETAILS*/
+#endif 
 	NumWrappedIsBetter1++;
 	return;
       }
 
       if (!I1->IsTop() && I2->IsTop()){
-#ifdef MORE_COMPARISON_DETAILS
-	dbgs() << "Interval won: ";
+#ifdef VERBOSE
+	dbgs() << "Classical more precise: ";
 	I1->print(dbgs());
-	dbgs() << " better than ";
+	dbgs() << " < ";
 	I2->print(dbgs());
 	dbgs() << "\n";
-#endif /*MORE_COMPARISON_DETAILS*/
+#endif 
 	NumUnWrappedIsBetter++;
 	return;
       }
-      // Otherwise, we convert the interval into a wrapped interval so
-      // that we can compare precision.
-
-      // dbgs() << "BEFORE CONVERSION: " ;
-      // dbgs() << "unwrapped:" ;
-      // I1->print(dbgs());
-      // dbgs() << "\n";
 
       APInt a = I1->getLB();
       APInt b = I1->getUB();
-      WrappedRange * NewI1 = new WrappedRange(a,b,a.getBitWidth());
-      if (I1->isBot())
-	NewI1->makeBot();
-      if (I1->IsTop())
-	NewI1->makeTop();
-
-      // dbgs() << "AFTER CONVERSION: " ;
-      // dbgs() << "wrapped:" ;
-      // NewI1->print(dbgs());
-      // dbgs() << "\n";
-      
-      if (I2->isEqual(NewI1)) {
+      WrappedRange NewI1(a,b,a.getBitWidth());
+      if (I1->isBot()) NewI1.makeBot();
+      if (I1->IsTop()) NewI1.makeTop();
+      if (I2->isEqual(&NewI1)) {
 	NumOfSame++;
-	delete NewI1;
 	return;
       }
 
-
-      if ( (I2->lessOrEqual(NewI1))){
-	if (NewI1->lessOrEqual(I2))
+      if ( (I2->lessOrEqual(&NewI1))){
+	if (NewI1.lessOrEqual(I2))
 	  NumOfSame++;
 	else{
-#ifdef MORE_COMPARISON_DETAILS
-	  dbgs() << "Wrapped interval won: ";
+#ifdef VERBOSE
+	  dbgs() << "Wrapped more precise: ";
 	  I2->print(dbgs());
-	  dbgs() << " better than ";
-	  NewI1->print(dbgs());
+	  dbgs() << " < ";
+	  NewI1.print(dbgs());
 	  dbgs() << "\n";
-#endif /*MORE_COMPARISON_DETAILS*/
+#endif 
 	  NumWrappedIsBetter2++;
 	}
       }
       else{
-	if (NewI1->lessOrEqual(I2)){
-#ifdef MORE_COMPARISON_DETAILS
-	  dbgs() << "Interval won: ";
-	  NewI1->print(dbgs());
-	  dbgs() << " better than ";
+	if (NewI1.lessOrEqual(I2)){
+#ifdef VERBOSE
+	  dbgs() << "Classical more precise: ";
+	  NewI1.print(dbgs());
+	  dbgs() << " < ";
 	  I2->print(dbgs());
 	  dbgs() << "\n";
-#endif /*MORE_COMPARISON_DETAILS*/
+#endif 
 	  NumUnWrappedIsBetter++;
 	}
 	else
 	  NumOfIncomparable++;
       }      
-      delete NewI1;
     } // end function
 
     void printStats(raw_ostream &Out){
       Out << "=----------------------------------------------------------------------=\n";
       Out << "                         Summary results                                \n";
       Out << "=----------------------------------------------------------------------=\n";
-      Out << "# tracked intervals              : "  <<  NumTotal << "\n";
-      Out << "# top/bottom intervals           : "  <<  NumOfTrivial << "\n";
-      Out << "# non top/bottom  intervals      : "  <<  NumTotal - NumOfTrivial << "\n\n";
-      Out << "# intervals same precision       : "  <<  NumOfSame << "\n";
-      Out << "# wrapped more precise because unwrappred top : "  <<  NumWrappedIsBetter1   << "   // hopefully > 0. \n";     
-      Out << "# wrapped more precise                        : "  <<  NumWrappedIsBetter2   << "   // hopefully > 0. \n";     
+      Out << "# tracked intervals                         : "  
+	  <<  NumTotal  << "\n";
+      Out << "# proper unwrapped intervals                : "  
+	  <<  NumTotal - NumOfTrivial - NumWrappedIsBetter1 << "\n";
+      Out << "# proper wrapped intervals                  : "  
+	  <<  NumTotal - NumOfTrivial << "\n";
+      Out << "# wrapped < unwrapped                       : " 
+	  <<  NumWrappedIsBetter1+NumWrappedIsBetter2 
+	  << " (tolerance=" <<  PRECISION_TOLERANCE << ")\n";
+      // Out << "# proper intervals                          : "  
+      // 	  <<  NumTotal - NumOfTrivial << "\n";
+      // Out << "# wrapped == unwrapped                      : " 
+      // 	  <<  NumOfSame << " (tolerance=" <<  PRECISION_TOLERANCE << ")\n";
+      // Out << "# wrapped < unwrapped (unwrappred=[-oo,oo]) : "  
+      // 	  <<  NumWrappedIsBetter1   << "\n";     
+      // Out << "# wrapped < unwrapped (unwrappred!=[-oo,oo]): "  
+      // 	  <<  NumWrappedIsBetter2   << "\n";     
+      Out << "# unwrapped < wrapped                       : "  
+	  <<  NumUnWrappedIsBetter << "    // should be 0. \n";
+      Out << "=----------------------------------------------------------------------=\n";
 
-      // FIXME: classical intervals cannot be more precise than
-      // Wrapped ones. However, it's possible that classical intervals
-      // implement a case which is not implemented precisely with
-      // Wrapped.
-      Out << "# intervals more precise         : "  <<  NumUnWrappedIsBetter << "   // should be 0. \n";
-      // Out << "# incomparable intervals         : "  <<  NumOfIncomparable << "\n\n";   
     }
    
-  }; // end of class generateStatsForPaper
+  }; // end of class runPrecComparison
 
-  char generateStatsForPaper::ID = 0;
-  static RegisterPass<generateStatsForPaper> GSFP("compare-range-analyses",
-						  "Compare -range-analysis and -wrapped-range-analysis",
-						  false,false);
+
+  // This pass aims at counting the number of redundant runtime checks
+  // generated by the IOC tools that can be identified by both
+  // classical fixed-width and wrapped interval analyses.
+  class runIOC : public ModulePass{
+  public:
+    class IOCCounter{
+    public:
+      IOCCounter():
+	NumTrapBlocks(0), 
+	NumReachableTrapBlocks(0), 
+	NumUnreachableTrapBlocks(0){}
+      unsigned int NumTrapBlocks;
+      unsigned int NumReachableTrapBlocks;
+      unsigned int NumUnreachableTrapBlocks;
+    };
+    class IOCCounter_Unwrapped: public IOCCounter{ 
+    public:
+      IOCCounter_Unwrapped(): IOCCounter(){
+      }
+    };
+    class IOCCounter_Wrapped  : public IOCCounter{ 
+    public:
+      IOCCounter_Wrapped(): IOCCounter(){
+      }
+    };
+
+    /// Pass identification, replacement for typeid    
+    static char ID; 
+    /// Constructor of the class.
+    runIOC() :  ModulePass(ID), IsSigned(true) { }
+    /// Destructor of the class.
+    ~runIOC(){}
+    
+    virtual bool runOnModule(Module &M){
+     
+      AliasAnalysis *AA = &getAnalysis<AliasAnalysis>(); 
+      CallGraph     *CG = &getAnalysis<CallGraph>();
+
+      recordTrapBlocks(M,CG);
+      
+      RangeAnalysis      Unwrapped(&M, widening, narrowing, AA, IsSigned);
+      WrappedRangeAnalysis Wrapped(&M, widening, narrowing, AA);
+      IOCCounter_Unwrapped c1; IOCCounter_Wrapped c2;
+
+      if (runOnlyFunction != ""){
+	Function *F = M.getFunction(runOnlyFunction); 
+	if (!F){
+	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+	  return false;
+	}
+	else{
+	  Unwrapped.init(F); 
+	  Unwrapped.solve(F);
+	  Wrapped.init(F); 
+	  Wrapped.solve(F);
+	  updateCounters(c1,c2,Unwrapped,Wrapped,F);
+
+	}
+      }
+      else{
+	int k=0;
+	for (Module::iterator F = M.begin(), FE = M.end(); F != FE ; ++F){
+	  if (IsAnalyzable(F,*CG)){
+	    if ( (numFuncs > 0) && (k > numFuncs)) 
+	      break;
+#if 1
+	    dbgs() << k << ": analysis of  " << F->getName() << "\n";
+	    dbgs() << "Running unwrapped ... \n";
+#endif 
+	    Unwrapped.init(F); 
+	    Unwrapped.solve(F);
+#if 1
+	    dbgs() << "Running wrapped ... \n";
+#endif 
+	    Wrapped.init(F); 
+	    Wrapped.solve(F);
+#if 1
+	    dbgs() << "Updating counters ... \n";
+#endif 
+	    updateCounters(c1,c2,Unwrapped,Wrapped,F);
+	    k++;
+	  }
+	}
+      }
+      printStats(dbgs(), c1, c2);
+      return false;
+    }
+
+    virtual void getAnalysisUsage(AnalysisUsage& AU) const {
+      RangePassRequirements(AU);
+    }
+    
+  private:
+    bool IsSigned;
+    DenseMap<BasicBlock*,unsigned int> TrackedTrapBlocks;
+    
+    void recordTrapBlocks(Module &M, CallGraph *CG){
+      for (Module::iterator F = M.begin(), FE = M.end(); F != FE; ++F){
+	if (IsAnalyzable(F,*CG)){
+	  for (Function::iterator B = F->begin(), BE = F->end(); B != BE; ++B){
+	    for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE; ++I){
+	      if (CallInst *CI = dyn_cast<CallInst>(&*I)){
+		if (Function *F = CI->getCalledFunction()){
+		  if (F->getName().endswith("trap_handler"))
+		    TrackedTrapBlocks.insert(std::make_pair(B,0));
+		}
+	      }
+	    }
+	  }
+	}
+      }
+    }
+
+    inline bool isTrapBlock(BasicBlock *BB){
+      DenseMap<BasicBlock*,unsigned int>::iterator It = 
+         TrackedTrapBlocks.find(BB);
+      return (It != TrackedTrapBlocks.end());
+    }
+
+    void updateCounters(IOCCounter_Unwrapped &c1, IOCCounter_Wrapped &c2,
+			RangeAnalysis &a1       , WrappedRangeAnalysis &a2,
+			Function *F){
+      for (Function::iterator BB = F->begin(), BE = F->end(); BB != BE; ++BB){
+	if (isTrapBlock(BB)){
+	  c1.NumTrapBlocks++;
+	  c2.NumTrapBlocks++;
+	  if (a1.IsReachable(BB))
+	    c1.NumReachableTrapBlocks++;
+	  else
+	    c1.NumUnreachableTrapBlocks++;
+	  if (a2.IsReachable(BB))
+	    c2.NumReachableTrapBlocks++;
+	  else
+	    c2.NumUnreachableTrapBlocks++;
+	}
+      }
+    }
+
+    void printStats(raw_ostream &Out, 
+		    const IOCCounter_Unwrapped &unwrapped, 
+		    const IOCCounter_Wrapped &wrapped){
+
+      assert(unwrapped.NumTrapBlocks == wrapped.NumTrapBlocks);
+      Out << "=----------------------------------------------------------------------=\n";
+      Out << "                        Summary results                                 \n";
+      Out << "=----------------------------------------------------------------------=\n";
+      Out << "Total number of IOC trap blocks              : " 
+	  << unwrapped.NumTrapBlocks << "\n";
+      Out << "Num of reachable   trap blocks with UNWRAPPED: " 
+       	  << unwrapped.NumReachableTrapBlocks  << "\n";
+      Out << "Num of unreachable trap blocks with UNWRAPPED: " 
+       	  << unwrapped.NumUnreachableTrapBlocks  << "\n";
+      Out << "Num of reachable   trap blocks with WRAPPED  : " 
+       	  << wrapped.NumReachableTrapBlocks  << "\n";     	  
+      Out << "Num of unreachable trap blocks with WRAPPED  : " 
+       	  << wrapped.NumUnreachableTrapBlocks  << "\n";     	  
+      Out << "=----------------------------------------------------------------------=\n";
+    }
+
+  }; // end of class runIOC
+
+  /// These passes are for generating number of experiments in papers.
+  /// Regular users do not need to know about them.
+
+  char runPrecComparison::ID = 0;
+  static RegisterPass<runPrecComparison> 
+  RunPrecision("compare-range-analyses",
+	       "Comparison -range-analysis vs -wrapped-range-analysis.",
+	       false,false);
+
+  char runIOC::ID = 0;
+  static RegisterPass<runIOC> 
+  RunIOC("ioc-stats", "Run IOC experiment.", false, false);
+
+
+  // class CountNumFuncs : public ModulePass{
+  // public:
+  //   // Pass identification, replacement for typeid    
+  //   static char ID; 
+  //   /// Constructor of the class.
+  //   CountNumFuncs() :  ModulePass(ID), numfuncs(0) { }
+  //   /// Destructor of the class.
+  //   ~CountNumFuncs(){}
+    
+  //   virtual bool runOnModule(Module &M){
+  //     CallGraph     *CG = &getAnalysis<CallGraph>();
+  //     for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F){	  
+  // 	if (IsAnalyzable(F,*CG))
+  // 	  numfuncs++;
+  //     } // end for
+  //     dbgs() << "Num of functions " << numfuncs << "\n";
+  //     return false;
+  //   }
+    
+  //   virtual void getAnalysisUsage(AnalysisUsage& AU) const {
+  //     RangePassRequirements(AU);
+  //   }    
+  // private:
+  //   unsigned int numfuncs;
+    
+  // }; 
+
+  // char CountNumFuncs::ID = 0;
+  // static RegisterPass<CountNumFuncs> 
+  // CountNumFuncs("numfuncs", "Count number of functions.", false, false);
+
+
+  // class printFunction : public ModulePass{
+  // public:
+  //   // Pass identification, replacement for typeid    
+  //   static char ID; 
+  //   /// Constructor of the class.
+  //   printFunction() :  ModulePass(ID) { }
+  //   /// Destructor of the class.
+  //   ~printFunction(){}
+    
+  //   virtual bool runOnModule(Module &M){
+  //     if (runOnlyFunction != ""){
+  // 	Function *F = M.getFunction(runOnlyFunction); 
+  // 	if (!F){ 
+  // 	  dbgs() << "ERROR: function " << runOnlyFunction << " not found\n\n";
+  // 	  return false;
+  // 	}
+  // 	for (Function::iterator i = F->begin(), e = F->end(); i != e; ++i)
+  // 	  dbgs() << *i ;
+  //     }      
+  //     return false;
+  //   }
+    
+  //   virtual void getAnalysisUsage(AnalysisUsage& AU) const {
+  //     RangePassRequirements(AU);
+  //   }    
+  // }; 
+
+  // char printFunction::ID = 0;
+  // static RegisterPass<printFunction> 
+  // printFunction("printfunc", "Print a selected function.", false, false);
 
 } // end namespace
 

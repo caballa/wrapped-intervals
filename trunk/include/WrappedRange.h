@@ -95,7 +95,7 @@ namespace unimelb {
     ~WrappedRange(){}
 
     /// Cardinality of a wrapped interval.
-    static inline APInt WCard(APInt x, APInt y){
+    static inline APInt WCard(const APInt &x, const APInt &y){
       if (x == y+1){  // ie., if [MININT,MAXINT}
 	APInt card = APInt::getMaxValue(x.getBitWidth());
 	// FIXME: getMaxValue(width) is actually 2^w - 1. 
@@ -119,12 +119,61 @@ namespace unimelb {
 
       if (LB == UB+1){ // implicitly using mod 2^w
       	DEBUG(dbgs() << "Normalizing [" << LB << "," << UB << "]"
-	             << " to top interval.");
+	             << " to top interval (" << getWidth() << " bits).\n");
       	makeTop();
       }
     }
 
-    void convertWidenBoundsToWrappedRange(APInt, APInt);
+    /// Used to compare precision with other analyses
+    inline void normalize(){
+      if (IsTop()) return;
+      if (isBot()) return;
+      normalizeTop();
+    }
+
+    // For comparison with other analyses.
+    inline uint64_t Cardinality() const {
+      if (isBot()) return 0;
+      APInt x = getLB();
+      APInt y = getUB();
+      if (IsTop() || (x == y+1)) {
+	APInt card = APInt::getMaxValue(width);
+	return card.getZExtValue() + 1;
+      }	
+      APInt card = (y - x + 1);
+      return card.getZExtValue();
+    }
+
+    /// Return true if | \gamma(this) | == 1 
+    virtual bool isGammaSingleton() const {
+      if (isBot() || IsTop()) return false;
+      APInt lb  = getLB();
+      APInt ub  = getUB();
+      APInt card  = WrappedRange::WCard(lb,ub);
+      return (card == 1);
+    }
+
+    inline bool IsRangeTooBig(const APInt &lb, const APInt &ub){
+      APInt card  = WrappedRange::WCard(lb,ub);
+      // If card does not fit into uint64_t then APInt raises an
+      // exception.
+      uint64_t n     =  card.getZExtValue();
+      // If width of lb and ub are different then APInt raises an
+      // exception.
+      unsigned width = lb.getBitWidth();
+      // If 2^w does not fit into uint64_t then APInt raises an exception.
+      uint64_t Max = (APInt::getMaxValue(width)).getZExtValue() + 1;
+      return (n >= Max);
+    }
+
+    inline void convertWidenBoundsToWrappedRange(const APInt &lb, const APInt &ub){
+      if (IsRangeTooBig(lb,ub))
+	makeTop();
+      else{
+	setLB(lb);
+	setUB(ub);
+      }
+    }
 
     /// clone method
     WrappedRange* clone(){
@@ -141,8 +190,6 @@ namespace unimelb {
       return (V->getValueID() == WrappedRangeId);
     }
 
-
-    virtual bool isGammaSingleton() const;
     virtual bool isBot() const; 
     virtual bool IsTop() const ; 
     virtual void makeBot();
@@ -158,10 +205,10 @@ namespace unimelb {
     /// and north poles. The use of these guys are key for most of the
     /// arithmetic, casting and bitwise operations as well as comparison
     /// operators.
-    static std::vector<WrappedRangePtr> ssplit(APInt, APInt, unsigned);
-    static std::vector<WrappedRangePtr> nsplit(APInt, APInt, unsigned);
+    static std::vector<WrappedRangePtr> ssplit(const APInt&, const APInt&, unsigned);
+    static std::vector<WrappedRangePtr> nsplit(const APInt&, const APInt&, unsigned);
 
-    bool WrappedMember(APInt) const;
+    bool WrappedMember(const APInt&) const;
     bool WrappedlessOrEqual(AbstractValue *);
     virtual bool lessOrEqual(AbstractValue *);
     virtual void WrappedJoin(AbstractValue *);

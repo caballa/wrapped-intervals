@@ -105,25 +105,12 @@ FixpointSSI::~FixpointSSI(){
     delete I->second;
 }
 
-/// Cleanup to make sure the analysis of a function does not interfere
-/// with others.
-void FixpointSSI::Cleanup(){
-  ValueState.clear();
-  TrackedCondFlags.clear();
-  InstWorkList.clear();
-  BBWorkList.clear();
-  BBExecutable.clear();
-  KnownFeasibleEdges.clear();
-  WideningPoints.clear();
-}
 void FixpointSSI::init(Function *F){
 
   Cleanup();
-
   // Pessimistic assumption about trackable global variables. In this
   // case, no bother running an expensive alias analysis.
-  //  addTrackedGlobalVariablesPessimistically(M);
-
+  // addTrackedGlobalVariablesPessimistically(M);
   unsigned Width;
   Type * Ty;
   if (Utilities::IsTrackableFunction(F)){
@@ -176,6 +163,19 @@ void FixpointSSI::init(Function *F){
     }
     // Record widening points.
     addTrackedWideningPoints(F);      
+
+#ifdef SKIP_TRAP_BLOCKS
+    for (Function::iterator B = F->begin(), BE = F->end(); B != BE; ++B){
+      for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE; ++I){
+	if (CallInst *CI = dyn_cast<CallInst>(&*I)){
+	  if (Function *F = CI->getCalledFunction()){
+	    if (F->getName().endswith("trap_handler"))
+	      TrackedTrapBlocks.insert(std::make_pair(B,0));
+	  }
+	}
+      }
+    }
+#endif     
   }
 }
 
@@ -384,6 +384,7 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
     if (I != ValueState.end() && NewV->lessOrEqual(OldV)){
       // No change
       DEBUG(dbgs() << "\nThere is no change\n");
+      delete NewV;
       return;  
     }
     
@@ -398,7 +399,7 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
       // casting operation. If the counter is not reset then we will
       // do widening again with potential catastrophic losses.
       if (NewV->isLattice())
-	  NewV->resetNumOfChanges();
+	NewV->resetNumOfChanges();
     }
     // there is change: visit uses of I.
     assert(NewV);
@@ -414,6 +415,7 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
 void FixpointSSI::updateCondFlag(Instruction &I, TBool * New){  
   assert(isTrackedCondFlag(&I));  
   if (NarrowingPass){
+    delete TrackedCondFlags[&I];
     TrackedCondFlags[&I] = New;    
     return;
   }  
@@ -421,9 +423,11 @@ void FixpointSSI::updateCondFlag(Instruction &I, TBool * New){
   if (Old->isEqual(New)){
     // No change
     DEBUG(dbgs() << "\nThere is no change\n");
+    delete New;
     return;  
   }  
   // There is change: visit uses of I.
+  delete TrackedCondFlags[&I];
   TrackedCondFlags[&I] = New;
   DEBUG(dbgs() << "***Added into I-WL: " << I << "\n");
   InstWorkList.insert(&I);
@@ -458,6 +462,12 @@ void FixpointSSI::markBlockExecutable(BasicBlock *BB) {
   DEBUG(dbgs() << "***Marking Block Executable: " << BB->getName() << "\n");
   NumOfAnalBlocks++;  
   BBExecutable.insert(BB);   // Basic block is executable  
+
+#ifdef SKIP_TRAP_BLOCKS
+  DenseMap<BasicBlock*,unsigned int>::iterator It = TrackedTrapBlocks.find(BB);
+  if (It != TrackedTrapBlocks.end())
+    return;
+#endif 
   BBWorkList.insert(BB);     // Add the block to the work list
 }
 
@@ -500,6 +510,10 @@ void FixpointSSI::visitInst(Instruction &I) {
   // Otherwise, we pass the transfer function to the abstract domain.
   if (Value *V = dyn_cast<Value>(&I)){
     if (AbstractValue * AbsV = ValueState.lookup(V)){ 
+
+      // New is going to keep a pointer to a derived class. The
+      // methods visitArithBinaryOp, visitBitwiseBinaryOp, and
+      // visitCast ensure that it is new allocated memory.
       AbstractValue *New = NULL;
       switch (I.getOpcode()){
       case Instruction::Add: 
@@ -586,6 +600,9 @@ void FixpointSSI::visitInst(Instruction &I) {
       } // end switch
       assert(New && "ERROR: something wrong during the transfer function ");
       PRINTCALLER("visitInst");
+      // We do not delete New since it will be stored in a map
+      // manipulated by updateState. Instead, updateState will free
+      // the old value if it is replaced with New.
       updateState(I,New);
     }
   } 
@@ -815,7 +832,7 @@ void FixpointSSI::visitLoadInst(LoadInst &I){
     if (TrackedGlobals.count(Gv)){
       // Special case if a Boolean Flag
       if (isTrackedCondFlag(Gv)){
-	TBool * LHSFlag = TrackedCondFlags[&I];    
+	TBool * LHSFlag = new TBool(*TrackedCondFlags[&I]);    
 	assert(LHSFlag && "Memory location not mapped to a Boolean flag");
 	if (isTrackedCondFlag(I.getPointerOperand())){
 	  TBool * MemAddFlag = TrackedCondFlags[I.getPointerOperand()];
@@ -824,6 +841,9 @@ void FixpointSSI::visitLoadInst(LoadInst &I){
 	}
 	else
 	  LHSFlag->makeMaybe();
+	// We do not delete LHSFlag since it will be stored in a map
+	// manipulated by updateCondFlag. Instead, updateCondFlag will
+	// free the old value if it is replaced with LHSFlag.
 	updateCondFlag(I,LHSFlag);
 	DEBUG(dbgs() << "\t[RESULT] ");
 	DEBUG(LHSFlag->print(dbgs()));
@@ -845,6 +865,9 @@ void FixpointSSI::visitLoadInst(LoadInst &I){
       // Compare if it loads a new value and then add I into the
       // worklist
       PRINTCALLER("visitLoadInst");
+      // We do not delete NewLHS since it will be stored in a map
+      // manipulated by updateState. Instead, updateState will free
+      // the old value if it is replaced with NewLHS.
       updateState(I,NewLHS);
       return;
     }
@@ -875,70 +898,91 @@ void insertTrackedValuesUsedSigmaNode(SigmaUsersTy &TrackedValuesUsedSigmaNode,
   }
 }
 
-/// Generate the constraint Op1 'pred' Op2 and record that the
-/// constraint is a filter for Op1.
+/// Add the entry LHSSigma --> (Op1 'pred' Op2) 
+/// Pre: there is no entry for LHSSigma.
 void genConstraint(unsigned pred, Value *Op1, Value *Op2,
-		   FiltersTy    &filters,
+		   SigmaFiltersTy &filters,
 		   Value * LHSSigma,
 		   SigmaUsersTy &TrackedValuesUsedSigmaNode){
   
-  BinaryConstraint * C = new BinaryConstraint(pred,Op1,Op2);
-  if (!C->isConstantOperand(0)){
-    FiltersTy::iterator It = filters.find(Op1);
-    if (It != filters.end()){
-      BinaryConstraintSetTy *Rhs  = It->second;
-      assert(Rhs);
-      Rhs->insert(C);
-      filters[Op1]=Rhs;
-      DEBUG(dbgs() << "\t" ; C->print(); dbgs() << "\n");
-    }
-    else{
-      BinaryConstraintSetTy * Rhs = new BinaryConstraintSetTy();
-      Rhs->insert(C);
-      filters.insert(std::make_pair(Op1, Rhs));
-      DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
-    }
-  }
+  BinaryConstraintPtr C(new BinaryConstraint(pred,Op1,Op2));
+  // Sanity check 
+  // SigmaFiltersTy::iterator It = filters.find(LHSSigma);
+  // assert(It == filters.end());
+  filters.insert(std::make_pair(LHSSigma, C));
+  DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
 
-  if (!C->isConstantOperand(1)){
-    FiltersTy::iterator It = filters.find(Op2);
-    if (It != filters.end()){
-      BinaryConstraintSetTy *Rhs = It->second;
-      assert(Rhs);
-      Rhs->insert(C);
-      filters[Op2]=Rhs;
-      DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
-    }
-    else{
-      BinaryConstraintSetTy *Rhs = new BinaryConstraintSetTy();
-	Rhs->insert(C);
-	filters.insert(std::make_pair(Op2, Rhs));
-	DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
-      
-    }
-  }
   // Key step for correctness of the fixpoint.
   insertTrackedValuesUsedSigmaNode(TrackedValuesUsedSigmaNode,Op1, LHSSigma);					          
   insertTrackedValuesUsedSigmaNode(TrackedValuesUsedSigmaNode,Op2, LHSSigma);					          
 }
 
+
+// /// Generate the constraint Op1 'pred' Op2 and record that the
+// /// constraint is a filter for both Op1 and Op2.
+// void genConstraint(unsigned pred, Value *Op1, Value *Op2,
+// 		   FiltersTy    &filters,
+// 		   Value * LHSSigma,
+// 		   SigmaUsersTy &TrackedValuesUsedSigmaNode){
+  
+//   BinaryConstraintPtr C(new BinaryConstraint(pred,Op1,Op2));
+//   if (!C->isConstantOperand(0)){
+//     FiltersTy::iterator It = filters.find(Op1);
+//     if (It != filters.end()){
+//       BinaryConstraintSetTy *Rhs  = It->second;
+//       assert(Rhs);
+//       Rhs->insert(C);
+//       filters[Op1]=Rhs;
+//       DEBUG(dbgs() << "\t" ; C->print(); dbgs() << "\n");
+//     }
+//     else{
+//       BinaryConstraintSetTy * Rhs = new BinaryConstraintSetTy();
+//       Rhs->insert(C);
+//       filters.insert(std::make_pair(Op1, Rhs));
+//       DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
+//     }
+//   }
+
+//   if (!C->isConstantOperand(1)){
+//     FiltersTy::iterator It = filters.find(Op2);
+//     if (It != filters.end()){
+//       BinaryConstraintSetTy *Rhs = It->second;
+//       assert(Rhs);
+//       Rhs->insert(C);
+//       filters[Op2]=Rhs;
+//       DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
+//     }
+//     else{
+//       BinaryConstraintSetTy *Rhs = new BinaryConstraintSetTy();
+// 	Rhs->insert(C);
+// 	filters.insert(std::make_pair(Op2, Rhs));
+// 	DEBUG(dbgs() << "\t"; C->print(); dbgs() << "\n");
+      
+//     }
+//   }
+//   // Key step for correctness of the fixpoint.
+//   insertTrackedValuesUsedSigmaNode(TrackedValuesUsedSigmaNode,Op1, LHSSigma);
+//   insertTrackedValuesUsedSigmaNode(TrackedValuesUsedSigmaNode,Op2, LHSSigma);
+// }
+
 void visitInstrToFilter(Value * LHSSigma, Value * RHSSigma, 
 			BranchInst *BI, BasicBlock *SigmaBB, ICmpInst* CI, 
-			FiltersTy    &filters,
+			SigmaFiltersTy    &filters,
 			SigmaUsersTy &TrackedValuesUsedSigmaNode){
 
   if (CI->getOperand(0) == RHSSigma || CI->getOperand(1) == RHSSigma){
-    assert((BI->getSuccessor(0) == SigmaBB || 
-	    BI->getSuccessor(1) == SigmaBB ) && "This should not happen");
-    if (BI->getSuccessor(0) == SigmaBB){      // Then
-      genConstraint(CI->getSignedPredicate(), CI->getOperand(0), CI->getOperand(1), 
+    assert((BI->getSuccessor(0) == SigmaBB || BI->getSuccessor(1) == SigmaBB )
+	   && "This should not happen");
+
+    // Figure out whether it is a "then" or "else" block.
+    if (BI->getSuccessor(0) == SigmaBB)
+      genConstraint(CI->getSignedPredicate(), 
+		    CI->getOperand(0), CI->getOperand(1), 
 		    filters, LHSSigma, TrackedValuesUsedSigmaNode);  
-    }
-    else { // Else
+    else 
       genConstraint(CI->getInversePredicate(CI->getSignedPredicate()), 
 		    CI->getOperand(0), CI->getOperand(1), 
 		    filters, LHSSigma, TrackedValuesUsedSigmaNode);
-    }
   }
   else{
     // Case to improve
@@ -954,8 +998,8 @@ void visitInstrToFilter(Value * LHSSigma, Value * RHSSigma,
 /// Key method for precision: refine RHSSigma using information from
 /// the branch condition BI.
 void FixpointSSI::generateFilters(Value *LHSSigma, Value *RHSSigma, 
-				  BranchInst *BI, BasicBlock *SigmaBB, 
-				  FiltersTy &filters){
+				  BranchInst *BI, BasicBlock *SigmaBB
+				  /*, FiltersTy &filters*/){
   unsigned width;
   DEBUG(dbgs() << "Generating filters for " << SigmaBB->getName() << ":" 
 	       << RHSSigma->getName() << ":\n");
@@ -964,8 +1008,9 @@ void FixpointSSI::generateFilters(Value *LHSSigma, Value *RHSSigma,
     // no bother
     if (Utilities::getIntegerWidth(CI->getType(),width))
       visitInstrToFilter(LHSSigma, RHSSigma, BI, SigmaBB, CI, 
-			 filters, TrackedValuesUsedSigmaNode);
+			 SigmaFilters, TrackedValuesUsedSigmaNode);
   }
+
 #ifdef  WARNINGS
   else if (SelectInst * SI = dyn_cast<SelectInst>(BI->getCondition())){
     // if (Utilities::getIntegerWidth(SI->getType(),width))
@@ -1013,64 +1058,108 @@ void FixpointSSI::generateFilters(Value *LHSSigma, Value *RHSSigma,
 
 /// For reducing the number of cases, normalize the constraint with
 /// respect to V. V appears always as the first argument in F.
-void normalizeConstraint(BinaryConstraint *&F, Value *V){
-  bool isOp1Constant = isa<ConstantInt>(F->getOperand(0));
-  bool isOp2Constant = isa<ConstantInt>(F->getOperand(1));
+void normalizeConstraint(BinaryConstraintPtr & FPtr, Value *V){
+  bool isOp1Constant = isa<ConstantInt>(FPtr.get()->getOperand(0));
+  bool isOp2Constant = isa<ConstantInt>(FPtr.get()->getOperand(1));
   assert(!(isOp1Constant && isOp2Constant));
   if (isOp1Constant && !isOp2Constant){
     // We swap operands to have first operand the variable and the
     // second the constant
-    F->swap();
+    FPtr.get()->swap();
   }    
   else if (!isOp1Constant && !isOp2Constant){
-    assert( (F->getOperand(0) == V) || (F->getOperand(1) == V));
-    if (F->getOperand(1) == V){
+    assert( (FPtr.get()->getOperand(0) == V) || 
+	    (FPtr.get()->getOperand(1) == V));
+    if (FPtr.get()->getOperand(1) == V){
       // We swap operands to have first operand the variable that we
       // want to refine.
-      F->swap();
+      FPtr.get()->swap();
     }
   }    
 }
 
 /// Execute the filters generated for RHSSigma and store the result in
 /// LHSSigma.
-bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma, 
-			     const FiltersTy filters){
+bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma){
   bool FilteredDone=false;
-  FiltersTy::const_iterator I = filters.find(RHSSigma);
-  if (I != filters.end()){
-    BinaryConstraintSetTy * Rhs = I->second;
-    for (BinaryConstraintSetTy::iterator II=Rhs->begin(), EE=Rhs->end(); II!=EE; ++II){
-      BinaryConstraint *C = *II;
-      DEBUG(dbgs() << "Evaluating filter constraints: "; C->print();  dbgs() << "\n");
-      normalizeConstraint(C,RHSSigma);
-      DEBUG(dbgs() << "After normalization          : "; C->print();  dbgs() << "\n");
-      AbstractValue * Op1 = Lookup(C->getOperand(0), true);
-      AbstractValue * Op2 = Lookup(C->getOperand(1), true);
+  SigmaFiltersTy::iterator I = SigmaFilters.find(LHSSigma->getValue());
+  if (I != SigmaFilters.end()){
+    BinaryConstraintPtr C = (*I).second;
+    DEBUG(dbgs() << "Evaluating filter constraints: "; C.get()->print();  dbgs() << "\n");
+    normalizeConstraint(C,RHSSigma);
+    DEBUG(dbgs() << "After normalization          : "; C.get()->print();  dbgs() << "\n");
+    // After normalization we know that Op1 is the default value for
+    // LHS which we hope to refine by using Op2.
+    AbstractValue * Op1 = Lookup(C.get()->getOperand(0), true);
+    AbstractValue * Op2 = Lookup(C.get()->getOperand(1), true);
+    
+    // This is too restrictive: If Op1 is already top then we do not
+    // bother.
+    // if (Op1->IsTop()){ LHSSigma->makeTop(); break; } 
+    
+    // Here we cannot filter since Op2 is top.
+    if (Op2->IsTop()) return false;
+    if (Op2->isBot()) return false;
+    
+    unsigned pred       = C.get()->getPred();
+    DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
+    DEBUG( Op1->print(dbgs()); dbgs() << "\n");
+    DEBUG( Op2->print(dbgs()); dbgs() << "\n");     
 
-      // After normalization we know that Op1 is the default value for
-      // LHS which we hope to refine by using Op2. 
-      // (This is too restrictive: If Op1 is already top then we do not
-      // bother)
-      //if (Op1->IsTop()){ LHSSigma->makeTop(); break; } 
+    // Do not remember why I cloned here but it does not make sense.
+    // LHSSigma->filterSigma(pred, Op1->clone(), Op2->clone());
+    LHSSigma->filterSigma(pred, Op1, Op2);
 
-      // Here we cannot filter since Op2 is top.
-      if (Op2->IsTop()) return false;
-      if (Op2->isBot()) return false;
-
-      unsigned pred       = C->getPred();
-      DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
-      DEBUG( Op1->print(dbgs()); dbgs() << "\n");
-      DEBUG( Op2->print(dbgs()); dbgs() << "\n");     
-      LHSSigma->filterSigma(pred, Op1->clone(), Op2->clone());
-      DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
-      FilteredDone=true;
-    }
+    DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
+    FilteredDone=true;
   }
   return FilteredDone;
 }
 
-// Simply assign RHSSigma to LHSSigma.
+
+
+// /// Execute the filters generated for RHSSigma and store the result in
+// /// LHSSigma.
+// bool FixpointSSI::evalFilter(AbstractValue * &LHSSigma, Value *RHSSigma, 
+// 			     const FiltersTy filters){
+//   bool FilteredDone=false;
+//   FiltersTy::const_iterator I = filters.find(RHSSigma);
+//   if (I != filters.end()){
+//     BinaryConstraintSetTy * Rhs = I->second;
+
+//     assert(Rhs->size() < 2);
+
+//     for (BinaryConstraintSetTy::iterator II=Rhs->begin(), EE=Rhs->end(); II!=EE; ++II){
+//       BinaryConstraintPtr C = *II;
+//       DEBUG(dbgs() << "Evaluating filter constraints: "; C.get()->print();  dbgs() << "\n");
+//       normalizeConstraint(C,RHSSigma);
+//       DEBUG(dbgs() << "After normalization          : "; C.get()->print();  dbgs() << "\n");
+//       AbstractValue * Op1 = Lookup(C.get()->getOperand(0), true);
+//       AbstractValue * Op2 = Lookup(C.get()->getOperand(1), true);
+
+//       // After normalization we know that Op1 is the default value for
+//       // LHS which we hope to refine by using Op2. 
+//       // (This is too restrictive: If Op1 is already top then we do not
+//       // bother)
+//       //if (Op1->IsTop()){ LHSSigma->makeTop(); break; } 
+
+//       // Here we cannot filter since Op2 is top.
+//       if (Op2->IsTop()) return false;
+//       if (Op2->isBot()) return false;
+
+//       unsigned pred       = C.get()->getPred();
+//       DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
+//       DEBUG( Op1->print(dbgs()); dbgs() << "\n");
+//       DEBUG( Op2->print(dbgs()); dbgs() << "\n");     
+//       LHSSigma->filterSigma(pred, Op1->clone(), Op2->clone());
+//       DEBUG( LHSSigma->print(dbgs()); dbgs() << "\n");
+//       FilteredDone=true;
+//     }
+//   }
+//   return FilteredDone;
+// }
+
+/// Simply assign RHSSigma to LHSSigma.
 void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma){
   // In programs like 176.gcc we have things like:
   //  %.01.i = phi i32 [ ptrtoint (double* getelementptr inbounds 
@@ -1079,8 +1168,6 @@ void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma){
   // Thus, we can raise an exception if RHSSigma is not found.
 
   ResetAbstractValue(LHSSigma);
-  //  LHSSigma->join(Lookup(RHSSigma,true));
-
   if (AbstractValue *AbsVal = Lookup(RHSSigma,false))
     LHSSigma->join(AbsVal);
   else
@@ -1091,20 +1178,26 @@ void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma){
 // assigning RHSSigma to LHSSigma. Additionally, knowledge from BI is
 // used to improve LHSSigma. First it generates any filter that it can
 // be inferred from the branch condition. Second, it actually executes
-// the filters.
+// the filter.
 void FixpointSSI::visitSigmaNode(AbstractValue *LHSSigma, Value * RHSSigma,
 				 BasicBlock *SigmaBB, BranchInst * BI){				 
+  // FiltersTy filters;
+  // generateFilters(LHSSigma->getValue(), RHSSigma, BI, SigmaBB, filters);
 
-  // Note that for each sigma node we create its filters over and over
-  // again. An improvement would be to cache those filters to avoid
-  // recomputing them. However, even if we recompute them it does not
-  // seem to be a problem.
-  FiltersTy filters;
-  generateFilters(LHSSigma->getValue(), RHSSigma, BI, SigmaBB, filters);
-  if (!evalFilter(LHSSigma, RHSSigma, filters)){
+  SigmaFiltersTy::iterator I = SigmaFilters.find(LHSSigma->getValue());
+  if (I == SigmaFilters.end())
+    generateFilters(LHSSigma->getValue(), RHSSigma, BI, SigmaBB);
+
+  
+  if (!evalFilter(LHSSigma, RHSSigma /*, filters*/)){
     // Assign RHSSigma to LHSSigma
     ResetAbstractValue(LHSSigma);
-    LHSSigma->join(Lookup(RHSSigma,true));
+    // LHSSigma->join(Lookup(RHSSigma,true));
+    if (AbstractValue * AbsVal = Lookup(RHSSigma,false))
+      LHSSigma->join(AbsVal);
+    else
+      LHSSigma->makeTop();
+
   }
 }
 
@@ -1177,6 +1270,9 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
 	  }
 	}
 	PRINTCALLER("visitSigmaNode");
+	// We do not delete NewAbsVal since it will be stored in a map
+	// manipulated by updateState. Instead, updateState will free
+	// the old value if it is replaced with NewAbsVal.
 	updateState(PN,NewAbsVal);
 	DEBUG(dbgs() << "\t[RESULT] ");
 	DEBUG(NewAbsVal->print(dbgs()));
@@ -1230,6 +1326,9 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
 	    }
 	  } // end for
 	  PRINTCALLER("visitPHI");
+	  // We do not delete NewAbsVal since it will be stored in a map
+	  // manipulated by updateState. Instead, updateState will free
+	  // the old value if it is replaced with NewAbsVal.
 	  updateState(PN,AbsValNew);
 	  DEBUG(dbgs() << "\t[RESULT] ");
 	  DEBUG(AbsValNew->print(dbgs()));
@@ -1273,6 +1372,9 @@ void FixpointSSI::visitSelectInst(SelectInst &Ins){
     // Some of the operands is not trackable but LHS is
     LHS->makeMaybe();
   BOOL_END:
+    // We do not delete LHS since it will be stored in a map
+    // manipulated by updateCondFlag. Instead, updateCondFlag will
+    // free the old value if it is replaced with LHS.
     updateCondFlag(Ins,LHS);
     DEBUG(dbgs() << "\t[RESULT] ");
     DEBUG(LHS->print(dbgs()));
@@ -1319,8 +1421,11 @@ void FixpointSSI::visitSelectInst(SelectInst &Ins){
   }
  END_GENERAL:
   PRINTCALLER("visitSelectInst");
+
+  // We do not delete LHS since it will be stored in a map
+  // manipulated by updateState. Instead, updateState will free
+  // the old value if it is replaced with LHS.
   updateState(Ins,LHS);
-  
   DEBUG(dbgs() << "\t[RESULT] ");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");          
@@ -1396,7 +1501,7 @@ void FixpointSSI::visitTerminatorInst(TerminatorInst &TI){
 
   // UnreachableInst
   if (isa<UnreachableInst>(&TI)){
-    // FIXME: all the abstract values should be bottom!u
+    // FIXME: all the abstract values should be bottom!
     DEBUG(dbgs() << "Unreachable instruction. \n") ;
     return;
   }
@@ -1522,12 +1627,16 @@ bool IsMeetEmpty(AbstractValue *V1,AbstractValue* V2){
     if (!V1->isConstant()){
       AbstractValue *Meet = V1->clone();
       Meet->meet(V1,V2);
-      return Meet->isBot();
+      bool result = Meet->isBot();
+      delete Meet;
+      return result;
     }
     else{      
       AbstractValue *Meet = V2->clone();
       Meet->meet(V1,V2);
-      return Meet->isBot();
+      bool result = Meet->isBot();
+      delete Meet;
+      return result;
     }
   }
 }
@@ -1603,6 +1712,10 @@ void FixpointSSI::visitComparisonInst(ICmpInst &I){
   DEBUG(dbgs() << "\t[RESULT]");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");          
+  
+  // We do not delete LHS since it will be stored in a map manipulated
+  // by updateCondFlag. Instead, updateCondFlag will free the old
+  // value if it is replaced with LHS.
   updateCondFlag(I,LHS);
 }
 
@@ -1628,6 +1741,9 @@ void FixpointSSI::visitBooleanLogicalInst(Instruction &I){
 	default:
 	  assert(false && "Wrong instruction in visitBooleanLogicalInst");
 	}
+	// We do not delete LHS since it will be stored in a map manipulated
+	// by updateCondFlag. Instead, updateCondFlag will free the old
+	// value if it is replaced with LHS.
 	updateCondFlag(I,LHS);
 	DEBUG(dbgs() << "\t[RESULT]");
 	DEBUG(LHS->print(dbgs()));
@@ -1757,9 +1873,9 @@ void sortByBasicBlock(Function *F, AbstractStateTy ValMap,
 
 /// Print analysis results for global variables.
 void FixpointSSI::printResultsGlobals(raw_ostream &Out){
-  dbgs () <<"\n===-------------------------------------------------------------------------===\n" ;
-  dbgs () << "                 Analysis Results for global variables \n" ;
-  dbgs () <<"===-------------------------------------------------------------------------===\n" ;      
+  Out <<"\n===-------------------------------------------------------------------------===\n" ;
+  Out << "                 Analysis Results for global variables \n" ;
+  Out <<"===-------------------------------------------------------------------------===\n" ;      
   // Iterate over all global variables of interest defined in the module
   for (Module::global_iterator Gv = M->global_begin(), E = M->global_end(); Gv != E; ++Gv){
     if (TrackedGlobals.count(Gv)){
@@ -1772,10 +1888,10 @@ void FixpointSSI::printResultsGlobals(raw_ostream &Out){
 
 /// Print results of the analysis for the particular function F.
 void FixpointSSI::printResultsFunction(Function *F, raw_ostream &Out){
-  dbgs () <<"\n===-------------------------------------------------------------------------===\n" ;
-  dbgs () << "                 Analysis Results for " << F->getName() << "\n" ;
-  dbgs () << "                 (Only local variables are displayed) \n" ;
-  dbgs () <<"===-------------------------------------------------------------------------===\n" ;      
+  Out <<"\n===-------------------------------------------------------------------------===\n" ;
+  Out << "                 Analysis Results for " << F->getName() << "\n" ;
+  Out << "                 (Only local variables are displayed) \n" ;
+  Out <<"===-------------------------------------------------------------------------===\n" ;      
 
   DenseMap<BasicBlock*, std::set<AbstractValue*> * > BlockMap;
   sortByBasicBlock(F, ValueState, BlockMap);
@@ -1838,10 +1954,6 @@ void printValueInfo(Value *v, Function *F){
 		 << " type(" << *Inst->getType() << ")\n";
 		   
 	}
-	// else{
-	//   dbgs() << Inst->getParent()->getName() << "#anonymous" 
-	// 	 << " type(" << *Inst->getType() << ")\n";
-	// }
       }
     }
   }
