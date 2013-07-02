@@ -3,13 +3,13 @@
 #=======================================================================#
 # Change the following paths for clang and opt
 #=======================================================================#
-#CLANG_PATH="$HOME/bin"
-#OPT_PATH="$HOME/SvnReps/Systems/llvm/Debug+Asserts/bin"
+CLANG_PATH="$HOME/bin"
+OPT_PATH="$HOME/SvnReps/Systems/llvm/Debug+Asserts/bin"
 ###
 # for my own profiling
 ###
-CLANG_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
-OPT_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
+#CLANG_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
+#OPT_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
 #=======================================================================#
 
 get_dir() {
@@ -95,9 +95,9 @@ FRONTEND_IOC_OPTS=" -O0 -m32 -fcatch-undefined-ansic-behavior "
 # The directory of this script
 SCRIPT_DIR="`get_dir \`dirname "${BASH_SOURCE[0]}"\``"
 WRAPPED_PATH="`get_dir $SCRIPT_DIR/..`"
-#MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
+MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
 # for my own profiling
-MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Profile/lib"
+#MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Profile/lib"
 
 COMPILE_WITH_IOC=0 
 # Input C program
