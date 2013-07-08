@@ -56,8 +56,9 @@ Pass is the pass that we want to run:
       -instcombine               remove redundant instructions.
                                  It can improve precision by removing problematic casting 
                                  instructions among many other things.
-      -insert-ioc-traps          Compile .c program with -fcatch-undefined-ansic-behavior which generates 
-                                 IOC trap blocks. Note: clang version must support -fcatch-undefined-ansic-behavior    
+      -insert-ioc-traps          Compile .c program with -fcatch-undefined-ansic-behavior 
+                                 which generates IOC trap blocks.  
+                                 Note: clang version must support -fcatch-undefined-ansic-behavior    
                        
   general options:
     -help                          print this message
