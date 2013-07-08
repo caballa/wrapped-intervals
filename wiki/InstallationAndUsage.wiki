@@ -22,7 +22,7 @@
    cd .. (back to where you started)
    mkdir build (for building without polluting the source dir)
    cd build
-   ../configure (you may need CC=gcc ../configure)
+   ../configure -enable-optimized=no CC="gcc -m32" CXX="g++ -m32"
    make
    This builds both LLVM and Clang for debug mode.
    }}}
@@ -33,8 +33,8 @@
    cd wrapped-intervals
   ./configure --with-llvmsrc=LLVM_SRC
   ./make
-   cd docs && make
-   change variable WRAPPED_PATH in tools/run.sh properly
+   cd docs && make (optional)
+   change CLANG_PATH and OPT_PATH in tools/run.sh
    }}}
 =Run= 
   {{{
@@ -56,7 +56,8 @@ Pass is the pass that we want to run:
       -instcombine               remove redundant instructions.
                                  It can improve precision by removing problematic casting 
                                  instructions among many other things.
-                                 
+      -insert-ioc-traps          Compile .c program with -fcatch-undefined-ansic-behavior which generates IOC trap blocks. Note: clang version must support -fcatch-undefined-ansic-behavior    
+                       
   general options:
     -help                          print this message
     -stats                         print stats
