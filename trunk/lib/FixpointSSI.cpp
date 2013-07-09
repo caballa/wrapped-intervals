@@ -65,9 +65,11 @@ void printUsersInst(Value *,SmallPtrSet<BasicBlock*, 16>,bool);
 inline void PRINTCALLER(std::string s){ /*dbgs() << s << "\n";*/ }
 
 FixpointSSI::
-FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA):
+FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA,
+	    OrderingTy ord):
   M(M),
   WideningLimit(WL),
+  ConstSetOrder(ord),
   NarrowingLimit(NL),
   NarrowingPass(false),
   AA(AA),
@@ -81,9 +83,11 @@ FixpointSSI(Module *M,  unsigned WL, unsigned NL, AliasAnalysis *AA):
 
 FixpointSSI::
 FixpointSSI(Module *M, unsigned WL, unsigned NL, 
-	    AliasAnalysis *AA, bool isSigned):
+	    AliasAnalysis *AA, bool isSigned,
+	    OrderingTy ord):
   M(M),
   WideningLimit(WL),
+  ConstSetOrder(ord),
   NarrowingLimit(NL),
   NarrowingPass(false),
   AA(AA),
@@ -103,6 +107,8 @@ FixpointSSI::~FixpointSSI(){
 	 I=TrackedCondFlags.begin(), 
 	 E=TrackedCondFlags.end(); I!=E; ++I)
     delete I->second;
+
+  ConstSet.clear();
 }
 
 void FixpointSSI::init(Function *F){
@@ -152,11 +158,28 @@ void FixpointSSI::init(Function *F){
 	}
       }
     } // end for    
-    // Create an abstract value for each integer constant in the
-    // program.
+    
+    /// Record all constant integers that appear in the program.
+    /// We put them into a set first to eliminate duplicates.
+    std::set<int64_t> Set;
+    Utilities::recordIntegerConstants(F,Set);
+    std::copy(Set.begin(), Set.end(), std::back_inserter(ConstSet));
+    // Sort them
+    if (ConstSetOrder == LESS_THAN){
+      // Since Set is ordered already using signed < we don't need to
+      // do anything here.
+      // std::sort(ConstSet.begin(), ConstSet.end()); 
+    }
+    else if (ConstSetOrder == LEX_LESS_THAN)
+      std::sort(ConstSet.begin(), ConstSet.end(), Utilities::Lex_LessThan_Comp);
+    else 
+      llvm_unreachable("Unsupported ordering");
+    DEBUG(Utilities::printIntConstants(ConstSet));
+
+    /// Create an abstract value for each integer constant in the
+    /// program.
     std::vector<std::pair<Value*,ConstantInt*> > NewAbsVals;
-    Utilities::addTrackedIntegerConstants(F, IsAllSigned, 
-					  ConstSet, NewAbsVals); 
+    Utilities::addTrackedIntegerConstants(F, IsAllSigned, NewAbsVals); 
     for (unsigned int i=0; i<NewAbsVals.size(); i++){
       ValueState.insert(std::make_pair(NewAbsVals[i].first,
 				       initAbsIntConstant(NewAbsVals[i].second)));   
@@ -384,7 +407,8 @@ void FixpointSSI::updateState(Instruction &Inst, AbstractValue * NewV) {
     if (I != ValueState.end() && NewV->lessOrEqual(OldV)){
       // No change
       DEBUG(dbgs() << "\nThere is no change\n");
-      delete NewV;
+      // If uncommented then we produce a seg fault if debugging mode
+      // delete NewV
       return;  
     }
     
@@ -423,7 +447,7 @@ void FixpointSSI::updateCondFlag(Instruction &I, TBool * New){
   if (Old->isEqual(New)){
     // No change
     DEBUG(dbgs() << "\nThere is no change\n");
-    delete New;
+    //delete New;
     return;  
   }  
   // There is change: visit uses of I.
@@ -1050,7 +1074,7 @@ void FixpointSSI::generateFilters(Value *LHSSigma, Value *RHSSigma,
     dbgs() <<  *(BI->getCondition()) << "\n";
     dbgs() << "We may avoid the analysis losing precision!\n";
     // Temporary raise exception to be aware of the unsupported case.
-    assert(false);		
+    llvm_unreachable("Unsupported case")
   }
 #endif  /*WARNINGS*/
 }
@@ -1274,6 +1298,7 @@ void FixpointSSI::visitPHINode(PHINode &PN) {
 	// manipulated by updateState. Instead, updateState will free
 	// the old value if it is replaced with NewAbsVal.
 	updateState(PN,NewAbsVal);
+
 	DEBUG(dbgs() << "\t[RESULT] ");
 	DEBUG(NewAbsVal->print(dbgs()));
 	DEBUG(dbgs() << "\n");        
@@ -1507,7 +1532,7 @@ void FixpointSSI::visitTerminatorInst(TerminatorInst &TI){
   }
 
   dbgs() << TI << "\n";
-  assert(false && "Found a terminator instruction that we do not support");
+  llvm_unreachable("Found an unsupported terminator instruction.");
 }
 
 // Reduce the number of cases. After calling getPredicate and
@@ -1567,7 +1592,7 @@ void comparisonEqInst(TBool &LHS,
 	LHS.makeMaybe();
     }
     break;
-    assert( false && "ERROR: undefined argument in predEquality ");
+    llvm_unreachable("ERROR: undefined argument in predEquality ");
   }
 }
 
@@ -1698,7 +1723,7 @@ void FixpointSSI::visitComparisonInst(ICmpInst &I){
 	comparisonSltInst(*LHS,Op1, Op2);
 	break;
       default:
-	assert( false &&"ERROR: uncovered comparison operator");
+	llvm_unreachable("ERROR: uncovered comparison operator");
       }  
       goto END;
     }
@@ -1739,7 +1764,7 @@ void FixpointSSI::visitBooleanLogicalInst(Instruction &I){
 	  LHS->Xor(Op1,Op2);
 	  break;
 	default:
-	  assert(false && "Wrong instruction in visitBooleanLogicalInst");
+	  llvm_unreachable("Wrong instruction in visitBooleanLogicalInst");
 	}
 	// We do not delete LHS since it will be stored in a map manipulated
 	// by updateCondFlag. Instead, updateCondFlag will free the old
@@ -1778,7 +1803,7 @@ void FixpointSSI::visitBooleanLogicalInst(Instruction &I){
   else
     dbgs() << I.getOperand(1)->getName() << " is NOT tracked\n";
   */
-  assert(false && "All operands must be Boolean flags that are being tracked");
+  llvm_unreachable("All operands must be Boolean flags that are being tracked");
 }
 
 

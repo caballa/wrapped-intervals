@@ -52,43 +52,6 @@ void printComparisonOp(unsigned Pred,raw_ostream &Out){
   }
 }
 
-inline bool IsMSBOne(const APInt &x){
-  // This tests the high bit of the APInt to determine if it is set.
-  return (x.isNegative());
-}
-
-inline bool IsMSBZero(const APInt &x){
-  return (!IsMSBOne(x));
-}
-
-/// Return true if x is lexicographically smaller than y.
-inline bool Lex_LessThan(const APInt &x, const APInt &y){
-  if (IsMSBOne(x)  && IsMSBZero(y)) return false;
-  if (IsMSBZero(x) && IsMSBOne(y))  return true;
-  if (IsMSBOne(x)  && IsMSBOne(y))  return x.slt(y);
-  if (IsMSBZero(x) && IsMSBZero(y)) return x.ult(y);
-  assert(false && "This should not happen");
-}
-
-/// Return true if x is lexicographically smaller or equal than y.
-inline bool Lex_LessOrEqual(const APInt &x, const APInt &y){
-  if (IsMSBOne(x) && IsMSBZero(y))  return false;
-  if (IsMSBZero(x) && IsMSBOne(y))  return true;
-  if (IsMSBOne(x) && IsMSBOne(y))   return x.sle(y);
-  if (IsMSBZero(x) && IsMSBZero(y)) return x.ule(y);
-  assert(false && "This should not happen");
-}
-
-/// Lexicographical maximum
-inline  APInt Lex_max(const APInt &x, const APInt &y){
-  return (Lex_LessOrEqual(x,y)? y : x);
-}
-
-/// Lexicographical minimum
-inline  APInt Lex_min(const APInt &x, const APInt &y){
-  return (Lex_LessOrEqual(x,y)? x : y);
-}
-
 bool WrappedRange::isBot() const { 
   return __isBottom;
 }
@@ -119,24 +82,20 @@ bool WrappedRange::isEqual(AbstractValue* V){
   return (S->lessOrEqual(T) && T->lessOrEqual(S));
 }
 
-
+#if 0
 /// Choose the greatest of the constants that is smaller than lb and
 /// the smallest of the constants that it is bigger than ub.
 void widenOneInterval(const APInt &a, const APInt &b, unsigned int width,		      
-		      const ConstantSetTy &JumpSet,
+		      const std::vector<int64_t> &JumpSet,
 		      APInt &lb, APInt &ub){
-
   // Initial values 
   lb= APInt::getSignedMinValue(width);
   ub= APInt::getSignedMaxValue(width);
-
   bool first_lb=true;
   bool first_ub=true;
-  for (ConstantSetTy::iterator 
-	 I=JumpSet.begin(), 
-	 E=JumpSet.end(); I != E; ++I){ 
 
-    APInt LandMark(width, *I);
+  for (unsigned int i=0; i < JumpSet.size(); i++)){ 
+    APInt LandMark(width, JumpSet[i]);
     if (Lex_LessOrEqual(LandMark,a)){
       if (first_lb){
 	lb = LandMark; 
@@ -153,20 +112,65 @@ void widenOneInterval(const APInt &a, const APInt &b, unsigned int width,
       else
 	ub = BaseRange::umin(ub,LandMark);// Lex_min(lb,LandMark);
     }
-  }
+}
   
 #ifdef DEBUG_WIDENING
   dbgs() << "Widen interval based on landmarks: " 
 	 << "[" << lb << "," << ub << "]\n";
 #endif 
 }
+#else
+/////
+// Optimized version that speed up the analysis significantly.
+// This version takes advantage of the fact that JumpSet is sorted.
+/////
+void widenOneInterval(const APInt &a, const APInt &b, unsigned int width,		      
+		      const std::vector<int64_t> &JumpSet,
+		      APInt &lb, APInt &ub){
+
+  // lb_It points to the first element that is not less than lb
+  std::vector<int64_t>::const_iterator lb_It= 
+    std::lower_bound(JumpSet.begin(), JumpSet.end(), a.getSExtValue(), 
+		     Utilities::Lex_LessThan_Comp);
+
+  if (lb_It == JumpSet.end()) // no element is less than a
+    lb = a; 
+  else{
+    if (lb_It == JumpSet.begin()){
+      APInt LB_LandMark(width, *(lb_It), false);
+      lb = LB_LandMark;
+    }
+    else{
+      APInt LB_LandMark(width, *(lb_It-1), false);
+      lb = LB_LandMark;
+    }
+  }
+
+  // ub_It points to the first element that is greater than ub
+  std::vector<int64_t>::const_iterator ub_It= 
+    std::upper_bound(JumpSet.begin(), JumpSet.end(), b.getSExtValue(), 
+		     Utilities::Lex_LessThan_Comp);
+
+  if (ub_It == JumpSet.end()) // no element is greater than b
+    ub = b; 
+  else{
+    APInt UB_LandMark(width, *ub_It, false);
+    ub = UB_LandMark;
+  }
+
+#ifdef DEBUG_WIDENING
+  dbgs() << "Widen interval based on landmarks: " 
+	 << "[" << lb << "," << ub << "]\n";
+#endif 
+}
+#endif  /* end wideningOneInterval */
 
 bool checkOverflowForWideningJump(const APInt &Card){
   // If a or b do not fit into uint64_t or they do not have same width
   // then APInt raises an exception
   uint64_t value = Card.getZExtValue();
   // Max is 2^{w-1}
-  uint64_t Max = (APInt::getSignedMaxValue(Card.getBitWidth() - 1)).getZExtValue();
+  uint64_t Max = (APInt::getSignedMaxValue(Card.getBitWidth() -1)).getZExtValue();
     
 #ifdef DEBUG_WIDENING
   dbgs() << "\n\tchecking if the widening jump overflows: " 
@@ -175,19 +179,11 @@ bool checkOverflowForWideningJump(const APInt &Card){
   return (value >= Max);
 }
 
-inline WrappedRange 
-mkSmallerInterval(const APInt &x, const APInt &y, unsigned width){
-  WrappedRange R1(x, x, width);    
-  WrappedRange R2(y, y, width);    
-  R1.join(&R2);
-  return R1;
-}
-
 /// After trivial cases, we check in what direction we are growing and
 /// doubling the size of one the intervals. We also use the constants
 /// of the program to make guesses.
 void WrappedRange::widening(AbstractValue *PreviousV, 
-			    const ConstantSetTy &JumpSet){
+                            const std::vector<int64_t> &JumpSet){
 
   if (PreviousV->isBot()) return;
   // rest of trivial cases are handled by the caller (e.g., if any of
@@ -206,21 +202,24 @@ void WrappedRange::widening(AbstractValue *PreviousV,
   DEBUG(dbgs() << "\t" << getValue()->getName()  
 	       <<  " WIDENING("  << *Old << "," << *this << ")=");
 	    
-  // dbgs() << "\t" << getValue()->getName() 
-  //        << " WIDENING(" << *Old << "," << *this << ")= \n");
-
-  //bool canDoublingInterval=true;
+  bool canDoublingInterval=true;
   APInt cardOld  = WCard(u,v);
+
   // Overflow check   
   if (checkOverflowForWideningJump(cardOld)){
-    //canDoublingInterval=false;
-    New->makeTop();
+    CounterWideningCannotDoubling++;
 #ifdef DEBUG_WIDENING
     dbgs() << "### \n";
 #endif
-    DEBUG(dbgs() <<  *New << "\n");
-    // dbgs() << "\t" << *New << "\n";
-    return;
+    if (CounterWideningCannotDoubling < 5){ // here some constant value
+      canDoublingInterval=false;
+    }
+    else{
+      New->makeTop();
+      DEBUG(dbgs() <<  *New << "\n");
+      CounterWideningCannotDoubling=0;
+      return;
+    }
   }
 
 #ifdef DEBUG_WIDENING
@@ -241,20 +240,20 @@ void WrappedRange::widening(AbstractValue *PreviousV,
 #ifdef DEBUG_WIDENING
     dbgs() << "Neither of the two extremes stabilize.\n";
 #endif 
-//     if (!canDoublingInterval){
-//       APInt widen_lb; APInt widen_ub;
-//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
-// 		       JumpSet, widen_lb, widen_ub);
-//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-//       WrappedRange tmp(x,y,width); 
-//       New->join(&tmp);
-// #ifdef DEBUG_WIDENING
-//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
-//       dbgs() << "Widen LB= " << widen_lb << "\n";
-//       dbgs() << "Widen UB= " << widen_ub << "\n";
-// #endif 
-//     }
-//     else{
+    if (!canDoublingInterval){
+      APInt widen_lb; APInt widen_ub;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+		       JumpSet, widen_lb, widen_ub);
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(x,y,width); 
+      New->join(&tmp);
+#ifdef DEBUG_WIDENING
+      dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+    }
+    else{
       APInt widen_lb = x;
       APInt widen_ub = x + cardOld + cardOld; 
 #ifdef DEBUG_WIDENING
@@ -276,7 +275,6 @@ void WrappedRange::widening(AbstractValue *PreviousV,
 	if (tmp.WrappedMember(jump_ub)) 
 	  widen_ub = jump_ub;
       }
-      // RefinedWithJumpSet(x, y, JumpSet, widen_lb, widen_ub);
 #ifdef DEBUG_WIDENING
       dbgs() << "After refinement with landmarks:\n";
       dbgs() << "Widen LB= " << widen_lb << "\n";
@@ -285,27 +283,27 @@ void WrappedRange::widening(AbstractValue *PreviousV,
       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
       WrappedRange tmp(x,y,width); 
       New->join(&tmp);
-      // }
+    }
   }
   else if ( (Merged.getLB() == u) && (Merged.getUB() == y)){
 #ifdef DEBUG_WIDENING
     dbgs() << "The upper bound does not stabilize but the lower bound does.\n";
 #endif 
-//     if (!canDoublingInterval){
-//       APInt widen_lb = u; APInt widen_lb__;
-//       APInt widen_ub;
-//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
-// 	               JumpSet, widen_lb__, widen_ub);
-//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-//       WrappedRange tmp(x,y,width); 
-//       New->join(&tmp);
-// #ifdef DEBUG_WIDENING
-//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
-//       dbgs() << "Widen LB= " << widen_lb << "\n";
-//       dbgs() << "Widen UB= " << widen_ub << "\n";
-// #endif 
-//     }
-//     else{
+    if (!canDoublingInterval){
+      APInt widen_lb = u; APInt widen_lb__;
+      APInt widen_ub;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+	               JumpSet, widen_lb__, widen_ub);
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(x,y,width); 
+      New->join(&tmp);
+#ifdef DEBUG_WIDENING
+      dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+    }
+    else{
       APInt widen_lb = u;
       APInt widen_ub = u + cardOld + cardOld; 
 #ifdef DEBUG_WIDENING
@@ -328,27 +326,27 @@ void WrappedRange::widening(AbstractValue *PreviousV,
       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
       WrappedRange tmp(u,y,width); 
       New->join(&tmp);
-      //    }
+    }
   }
   else if ( (Merged.getLB() == x) && (Merged.getUB() == v)){
 #ifdef DEBUG_WIDENING
     dbgs() << "The lower bound does not stabilize but the upper bound does.\n";
 #endif
-//     if (!canDoublingInterval){
-//       APInt widen_lb; 
-//       APInt widen_ub = v; APInt widen_ub__;
-//       widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
-// 		       JumpSet, widen_lb, widen_ub__);
-//       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
-//       WrappedRange tmp(x,y,width); 
-//       New->join(&tmp);
-// #ifdef DEBUG_WIDENING
-//       dbgs() << "We cannot doubling the interval so we use landmarks:\n";
-//       dbgs() << "Widen LB= " << widen_lb << "\n";
-//       dbgs() << "Widen UB= " << widen_ub << "\n";
-// #endif 
-//     }
-//     else{
+    if (!canDoublingInterval){
+      APInt widen_lb; 
+      APInt widen_ub = v; APInt widen_ub__;
+      widenOneInterval(Merged.getLB(), Merged.getUB(), width, 
+		       JumpSet, widen_lb, widen_ub__);
+      New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
+      WrappedRange tmp(x,y,width); 
+      New->join(&tmp);
+#ifdef DEBUG_WIDENING
+      dbgs() << "We cannot doubling the interval so we use landmarks:\n";
+      dbgs() << "Widen LB= " << widen_lb << "\n";
+      dbgs() << "Widen UB= " << widen_ub << "\n";
+#endif 
+    }
+    else{
       APInt widen_lb = u - cardOld - cardOld; 
       APInt widen_ub = v;
 #ifdef DEBUG_WIDENING
@@ -371,7 +369,7 @@ void WrappedRange::widening(AbstractValue *PreviousV,
       New->convertWidenBoundsToWrappedRange(widen_lb,widen_ub);
       WrappedRange tmp(x,v,width);
       New->join(&tmp);
-      //    }
+    }
   }
   else{
     //assert(false && "Unsupported case");
@@ -388,7 +386,6 @@ void WrappedRange::widening(AbstractValue *PreviousV,
 #endif
 
   DEBUG(dbgs()  <<"\t" << getValue()->getName()  << "=" << *this << "\n");
-  //dbgs()<< "\t" << *this << "\n";
   return;
 }
 
@@ -460,25 +457,18 @@ void WrappedRange::print(raw_ostream &Out) const{
 }
 
 void WrappedRange::join(AbstractValue *V){
-
-  // Join is mostly called when a phi node is encountered. At that
-  // point, we cannot make any assumption about signedeness so we need
-  // to cut at the south pole
   WrappedRange * R = cast<WrappedRange>(V);
-
   if (R->isBot()) 
     return;
-
   if (isBot()){
     WrappedRangeAssign(R); 
     return;
   }
-
+#if 0
   std::vector<WrappedRangePtr> s1 = 
     WrappedRange::ssplit(R->getLB(), R->getUB(), R->getLB().getBitWidth());
   std::vector<WrappedRangePtr> s2 = 
     WrappedRange::ssplit(getLB(), getUB(), getLB().getBitWidth());
-
   typedef std::vector<WrappedRangePtr>::iterator It;
   for (It I1=s1.begin(), E1=s1.end(); I1!=E1; ++I1){
     for (It I2=s2.begin(), E2=s2.end(); I2!=E2; ++I2){      
@@ -486,14 +476,19 @@ void WrappedRange::join(AbstractValue *V){
       this->Binary_WrappedJoin((*I1).get(), (*I2).get());
     }
   }
+#else 
+  WrappedJoin(R);
+#endif 
   normalizeTop();
 }
 
-// Just a wrapper.
+#if 0
+//Just a wrapper.
 void WrappedRange::Binary_WrappedJoin(WrappedRange *R1, WrappedRange *R2){
   WrappedJoin(R1);
   WrappedJoin(R2);
 }
+#endif 
 
 void WrappedRange::WrappedJoin(AbstractValue *V){
 
@@ -756,15 +751,11 @@ GeneralizedJoin(std::vector<AbstractValue *> Values){
 // End  Machinery for generalized join
 
 void WrappedRange::meet(AbstractValue *V1, AbstractValue *V2){
-			
-  // FIXME: meet is mostly called when a comparison instruction is
-  // encountered. If this is always the case we could call directly to
-  // WrappedMeet without cutting at the south pole.
-  
+			  
   WrappedRange * R1 = cast<WrappedRange>(V1);
   WrappedRange * R2 = cast<WrappedRange>(V2);
 
-#if 1
+#if 0
   this->makeBot();
   // **SOUTH POLE SPLIT** 
   std::vector<WrappedRangePtr> s1 = 
@@ -1299,7 +1290,7 @@ filterSigma_VarAndConst(unsigned Pred, WrappedRange *V, WrappedRange *N){
       return;
     }  
   default:
-    assert(false && "unexpected error in filterSigma_VarAndConst");
+    llvm_unreachable("Unexpected error in filterSigma_VarAndConst");
   }
 }
 
@@ -1530,7 +1521,6 @@ WrappedRange::ssplit(const APInt &x, const APInt &y, unsigned width){
     // No need of split
     ////
     res.push_back(s);
-    //dbgs() << "{" << *(s.get()) << "}\n";
     return res;
   }
   else{
@@ -1539,7 +1529,6 @@ WrappedRange::ssplit(const APInt &x, const APInt &y, unsigned width){
     WrappedRangePtr s2(new WrappedRange(SP_ub,y,width)); // [000...0,  y] 
     res.push_back(s1);
     res.push_back(s2);
-    //dbgs() << "{" << *(s1.get()) << "," << *(s2.get()) << "}\n";
     return res;  
   }
 }
@@ -1562,14 +1551,15 @@ std::vector<WrappedRangePtr> psplit(const APInt &x, const APInt &y, unsigned wid
 }
 
 std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
-  std::vector<WrappedRangePtr> purgedZeroIntervals;
-
+  std::vector<WrappedRangePtr> purgedZeroIntervals; 
   WrappedRange * R = RPtr.get();
+
+  assert(!(R->getLB() == 0  && R->getUB() == 0) && "Interval cannot be [0,0]");
 
   unsigned width = R->getLB().getBitWidth();
   // Temporary wrapped interval for zero
-  APInt Zero_lb(width, 0, true);          // 000...0 
-  APInt Zero_ub(width, 0, true);          // 000...0 
+  APInt Zero_lb(width, 0, false);          // 000...0 
+  APInt Zero_ub(width, 0, false);          // 000...0 
   WrappedRange Zero(Zero_lb,Zero_ub,width);
 
   if (Zero.lessOrEqual(R)){
@@ -1579,7 +1569,6 @@ std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
 	WrappedRangePtr s(new WrappedRange(R->getLB()+1,R->getUB(),width)); 
 	purgedZeroIntervals.push_back(s);      
       }
-      // if the interval is [0,0] we don't push anything
     }
     else{
       if (R->getUB() == 0){
@@ -1590,7 +1579,7 @@ std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
       }
       else{
 	// Cross the south pole: split into two intervals
-	APInt plusOne(width, 1, true);              // 000...1 
+	APInt plusOne(width, 1, false);              // 000...1 
 	APInt minusOne = APInt::getMaxValue(width); // 111...1
 	WrappedRangePtr s1(new WrappedRange(R->getLB(),minusOne  ,width)); // [x, 111....1]
 	WrappedRangePtr s2(new WrappedRange(plusOne   ,R->getUB(),width));  // [000...1,  y] 
@@ -1604,6 +1593,7 @@ std::vector<WrappedRangePtr>  purgeZero(WrappedRangePtr RPtr){
     WrappedRangePtr s(new WrappedRange(*R));
     purgedZeroIntervals.push_back(s);
   }
+
   return purgedZeroIntervals;
 }
 
@@ -1649,14 +1639,6 @@ WrappedRange UnsignedWrappedMult(const WrappedRange *Op1,
 }
 
 
-inline bool AllPos(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
-  return (IsMSBZero(a) && IsMSBZero(b) && IsMSBZero(c) && IsMSBZero(d));
-}
-
-inline bool AllNeg(const APInt &a, const APInt &b, const APInt &c, const APInt &d){
-  return (IsMSBOne(a) && IsMSBOne(b) && IsMSBOne(c) && IsMSBOne(d));
-}
-
 WrappedRange SignedWrappedMult(const WrappedRange *Op1, 
 			       const WrappedRange *Op2){
 		       
@@ -1667,8 +1649,13 @@ WrappedRange SignedWrappedMult(const WrappedRange *Op1,
   APInt c = Op2->getLB();
   APInt d = Op2->getUB();
 
+  bool IsZero_a = IsMSBZero(a);
+  bool IsZero_b = IsMSBZero(b);
+  bool IsZero_c = IsMSBZero(c);
+  bool IsZero_d = IsMSBZero(d);
+
   // [2,5]   * [10,20]   = [20,100]
-  if (AllPos(a,b,c,d)){
+  if (IsZero_a && IsZero_b && IsZero_c && IsZero_d){
     bool Overflow1, Overflow2;
     APInt lb = a.smul_ov(c,Overflow1);
     APInt ub = b.smul_ov(d,Overflow2);
@@ -1679,7 +1666,7 @@ WrappedRange SignedWrappedMult(const WrappedRange *Op1,
     }
   }
   // [-5,-2] * [-20,-10] = [20,100]
-  else if (AllNeg(a,b,c,d)){
+  else if (!IsZero_a && !IsZero_b && !IsZero_c && !IsZero_d){
     bool Overflow1, Overflow2;
     APInt lb = b.smul_ov(d,Overflow1);
     APInt ub = a.smul_ov(c,Overflow2);
@@ -1690,7 +1677,7 @@ WrappedRange SignedWrappedMult(const WrappedRange *Op1,
     }
   }
   // [-10, -2] * [2, 5] = [-50,-4]
-  else if (IsMSBOne(a) && IsMSBOne(b) && IsMSBZero(c) && IsMSBZero(d)){
+  else if (!IsZero_a && !IsZero_b && IsZero_c && IsZero_d){
     bool Overflow1, Overflow2;
     APInt lb = a.smul_ov(d,Overflow1);
     APInt ub = b.smul_ov(c,Overflow2);
@@ -1701,7 +1688,7 @@ WrappedRange SignedWrappedMult(const WrappedRange *Op1,
     }
   }
   // [2, 10] * [-5, -2] = [-50,-4]
-  else if (IsMSBZero(a) && IsMSBZero(b) && IsMSBOne(c) && IsMSBOne(d)){
+  else if (IsZero_a && IsZero_b && !IsZero_c && !IsZero_d){
     bool Overflow1, Overflow2;
     APInt lb = b.smul_ov(c,Overflow1);
     APInt ub = a.smul_ov(d,Overflow2);
@@ -1712,7 +1699,7 @@ WrappedRange SignedWrappedMult(const WrappedRange *Op1,
     }
   }
   else 
-    assert(false && "Unsupported case!");
+    llvm_unreachable("Unsupported case!");
 
   NumOfOverflows++;  
   Res.makeTop();
@@ -1803,7 +1790,10 @@ WrappedRange WrappedSignedDivision(WrappedRange const *Dividend,
   dbgs() << "[" << c << "," << d << "]\n";
 #endif 
 
-  if (IsMSBZero(a) && IsMSBZero(c)){
+  bool IsZero_a = IsMSBZero(a);
+  bool IsZero_c = IsMSBZero(c);
+
+  if (IsZero_a && IsZero_c){
     bool IsOverflow1, IsOverflow2;
     Res.setLB(a.sdiv_ov(d,IsOverflow1));
     Res.setUB(b.sdiv_ov(c,IsOverflow2));
@@ -1814,7 +1804,7 @@ WrappedRange WrappedSignedDivision(WrappedRange const *Dividend,
 #endif 
     return Res;
   }
-  else if (IsMSBOne(a) && IsMSBOne(c)){
+  else if (!IsZero_a && !IsZero_c){
     bool IsOverflow1, IsOverflow2;
     Res.setLB(b.sdiv_ov(c,IsOverflow1));
     Res.setUB(a.sdiv_ov(d,IsOverflow2));
@@ -1825,7 +1815,7 @@ WrappedRange WrappedSignedDivision(WrappedRange const *Dividend,
 #endif 
     return Res;    
   }
-  else if (IsMSBZero(a) && IsMSBOne(c)){
+  else if (IsZero_a && !IsZero_c){
     bool IsOverflow1, IsOverflow2;
     Res.setLB(b.sdiv_ov(d,IsOverflow1));
     Res.setUB(a.sdiv_ov(c,IsOverflow2));
@@ -1836,7 +1826,7 @@ WrappedRange WrappedSignedDivision(WrappedRange const *Dividend,
 #endif 
     return Res;    
   }
-  else if (IsMSBOne(a) && IsMSBZero(c)){
+  else if (!IsZero_a && IsZero_c){
     bool IsOverflow1, IsOverflow2;
     Res.setLB(a.sdiv_ov(c,IsOverflow1));
     Res.setUB(b.sdiv_ov(d,IsOverflow2));
@@ -1848,7 +1838,7 @@ WrappedRange WrappedSignedDivision(WrappedRange const *Dividend,
     return Res;    
   }
 
-  assert(false && "This should be unreachable");
+  llvm_unreachable("This should be unreachable");
 }
 
 void WrappedRange::WrappedDivision(WrappedRange *LHS, 
@@ -1961,30 +1951,34 @@ void WrappedRange::
 	APInt b = (*I1).get()->getUB();
 	APInt c = (*I2).get()->getLB();
 	APInt d = (*I2).get()->getUB();
+
+	bool IsZero_a = IsMSBZero(a);
+	bool IsZero_c = IsMSBZero(c);
+
 	unsigned width = b.getBitWidth();
 	APInt lb; APInt ub;
-	if (IsMSBZero(a) && IsMSBZero(c)){ 
+	if (IsZero_a && IsZero_c){ 
 	  // [0,d-1]
-	  lb = APInt(width, 0, true); 
+	  lb = APInt(width, 0, false); 
 	  ub = d-1;
 	}
-	else if (IsMSBZero(a) && IsMSBOne(c)){
+	else if (IsZero_a && !IsZero_c){
 	  // [0,-c-1]
-	  lb = APInt(width, 0, true); 
+	  lb = APInt(width, 0, false); 
 	  ub = -c-1;
 	}
-	else if (IsMSBOne(a) && IsMSBZero(c)){
+	else if (!IsZero_a && IsZero_c){
 	  // [-d+1,0]
 	  lb = -d+1;
-	  ub = APInt(width, 0, true); 
+	  ub = APInt(width, 0, false); 
 	}
-	else if (IsMSBOne(a) && IsMSBOne(c)){
+	else if (!IsZero_a && !IsZero_c){
 	  // [c+1,0]
 	  lb = c+1;
-	  ub = APInt(width, 0, true); 
+	  ub = APInt(width, 0, false); 
 	}
 	else
-	  assert(false && "This should be unreachable!");
+	  llvm_unreachable("This should be unreachable!");
 
 	WrappedRange tmp(lb,ub,width);	 
 	LHS->join(&tmp);
@@ -2020,7 +2014,7 @@ void WrappedRange::
 	// }
 	// else{
 	APInt d  = (*I2).get()->getUB();
-	APInt lb = APInt(width, 0, true); 
+	APInt lb = APInt(width, 0, false); 
 	APInt ub = d - 1;
  	unsigned width = d.getBitWidth();
 	WrappedRange tmp(lb,ub,width);	 
@@ -2126,7 +2120,7 @@ visitArithBinaryOp(AbstractValue *V1,AbstractValue *V2,
     break;
   default:
     dbgs() << OpCodeName << "\n";
-    assert(false && "Arithmetic operation not implemented");
+    llvm_unreachable("Arithmetic operation not implemented");
   } // end switch
 
  END:
@@ -2336,7 +2330,7 @@ void WrappedRange::WrappedLogicalBitwise(WrappedRange *LHS,
 	}
 	break;
       default:
-	assert(false && "Unexpected instruction");
+	llvm_unreachable("Unexpected instruction");
       } // end switch
 #ifdef DEBUG_LOGICALBIT
       dbgs() << "After intermediate join: " << *LHS << "\n";
@@ -2481,7 +2475,7 @@ WrappedBitwiseShifts(WrappedRange *LHS,
     }
     break;
   default:
-    assert(false && "Unexpected instruction");
+    llvm_unreachable("Unexpected instruction");
   } // end switch
 }
 

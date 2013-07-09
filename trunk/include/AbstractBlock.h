@@ -42,22 +42,28 @@ namespace unimelb {
     unsigned getPred(){ return pred;}
     unsigned getPred() const { return pred;}
     bool isConstantOperand(unsigned i){
-      if      (i==0) return isa<ConstantInt>(Op1);
-      else if (i==1) return isa<ConstantInt>(Op2);
-      else           assert(false);
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return isa<ConstantInt>(Op1);
+      else  
+	return isa<ConstantInt>(Op2);
     }
     bool isEqual(BinaryConstraint *C){
       return ( (pred == C->getPred()) && (Op1 == C->getOperand(0)) && (Op2 == C->getOperand(1)));
     }
     Value*   getOperand(unsigned i){ 
-      if      (i==0) return Op1;
-      else if (i==1) return Op2;
-      else           assert(false);
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return Op1;
+      else 
+	return Op2;
     }
     Value*   getOperand(unsigned i) const{ 
-      if      (i==0) return Op1;
-      else if (i==1) return Op2;
-      else           assert(false);
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return Op1;
+      else 
+	return Op2;
     }
 
     void swap(){
@@ -138,6 +144,7 @@ namespace unimelb {
       	       C1->getOperand(1) == C2->getOperand(1));
     }
   };
+
 
   typedef std::set<BinaryConstraint*, BinaryConstraintCmp> BinaryConstraintSetTy;
   typedef DenseMap<Value* , BinaryConstraintSetTy * > FiltersTy;

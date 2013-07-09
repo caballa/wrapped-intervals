@@ -22,7 +22,7 @@
 /// P. Schachte, H. Sondergaard, P. J. Stuckey published in APLAS'12.
 /// 
 /// We need a special symbol for bottom since the range [-1,0] is a
-/// valid wrapped interval that denotes top.
+/// valid wrapped interval that, in fact, it denotes top.
 ////////////////////////////////////////////////////////////////////////
 
 #include "AbstractValue.h"
@@ -46,9 +46,10 @@
 /// are signed or not since the analysis is signed-agnostic.
 /// Therefore, by default we assume that all operations are unsigned
 /// except those that really depend on the sign (e.g. division,
-/// comparisons, etc)
+/// comparisons, etc). In any case, the analysis uses this flag.
 #define __SIGNED false  // false means unsigned by default.
 #define DEBUG_TYPE "RangeAnalysis"
+
 namespace unimelb {
 
   class WrappedRange;
@@ -59,15 +60,23 @@ namespace unimelb {
     virtual BaseId getValueID() const { return WrappedRangeId; }
     /// Constructor of the class.
     WrappedRange(Value *V):  
-      BaseRange(V, __SIGNED, false), __isBottom(false){}
+      BaseRange(V, __SIGNED, false), 
+      __isBottom(false),
+      CounterWideningCannotDoubling(0){}
     
     /// Constructor of the class for an integer constant.
     WrappedRange(const ConstantInt *C, unsigned Width): 
-      BaseRange(C,Width, __SIGNED, false), __isBottom(false){ }
+      BaseRange(C,Width, __SIGNED, false), 
+      __isBottom(false),
+      CounterWideningCannotDoubling(0){ 
+      
+    }
 
     /// Constructor of the class for a TBool object 
     WrappedRange(Value *V, TBool * B):
-      BaseRange(V, __SIGNED, false), __isBottom(false){
+      BaseRange(V, __SIGNED, false), 
+      __isBottom(false),
+      CounterWideningCannotDoubling(0){
       if (B->isTrue()){
 	setLB((uint64_t) 1); 
 	setUB((uint64_t) 1);
@@ -77,19 +86,25 @@ namespace unimelb {
 	setUB((uint64_t) 0);
       }
       else{
-	// FIXME: we should say  [0,1]
-	makeTop();
+	setLB((uint64_t) 0); 
+	setUB((uint64_t) 1);
       }
     }
 
     /// Constructor of the class for APInt's 
     /// For temporary computations.
     WrappedRange(APInt lb, APInt ub, unsigned Width): 
-      BaseRange(lb,ub,Width,__SIGNED,false),  __isBottom(false){ }
+      BaseRange(lb,ub,Width,__SIGNED,false),
+      __isBottom(false),
+      CounterWideningCannotDoubling(0){ 
+      
+    }
 
     /// Copy constructor of the class.
     WrappedRange(const WrappedRange& other ): BaseRange(other){
-    __isBottom = other.__isBottom;}
+      __isBottom = other.__isBottom;
+      CounterWideningCannotDoubling = other.CounterWideningCannotDoubling;
+    }
 
     /// Destructor of the class.
     ~WrappedRange(){}
@@ -182,7 +197,9 @@ namespace unimelb {
 
     /// Methods for support type inquiry through isa, cast, and
     /// dyn_cast.
-    static inline bool classof(const WrappedRange *) { return true; }
+    static inline bool classof(const WrappedRange *) { 
+      return true; 
+    }
     static inline bool classof(const BaseRange *V) {
       return (V->getValueID() == WrappedRangeId);
     }
@@ -196,9 +213,9 @@ namespace unimelb {
     virtual void makeTop();
     virtual void print(raw_ostream &Out) const;
 
-    inline void WrappedRangeAssign(WrappedRange * V) {
-      BaseRange::RangeAssign(V);
-      __isBottom = V->__isBottom;
+    inline void WrappedRangeAssign(WrappedRange * other) {
+      BaseRange::RangeAssign(other);
+      __isBottom = other->__isBottom;
     }
 
     /// Key auxiliary methods to split the wrapped range at the south
@@ -220,7 +237,7 @@ namespace unimelb {
     virtual void GeneralizedJoin(std::vector<AbstractValue *>);
     virtual void meet(AbstractValue *, AbstractValue *);
     virtual bool isEqual(AbstractValue*);
-    virtual void widening(AbstractValue *, const ConstantSetTy &);
+    virtual void widening(AbstractValue *, const std::vector<int64_t> &);
 
     /// Return true is this is syntactically identical to V.
     virtual bool isIdentical(AbstractValue *V);
@@ -267,9 +284,14 @@ namespace unimelb {
 						 const Type *, const Type *,
 						 unsigned, const char *);
 
-    // virtual bool countForStats() const;
   private: 
     bool __isBottom; //!< If true the interval is bottom.
+
+    // During widening it is possible that we cannot doubling the
+    // interval but we could choose a program constant that may
+    // produce a tighter interval. However, we can only do this a
+    // finite number of times.
+    unsigned int CounterWideningCannotDoubling;
 
     inline void resetBottomFlag(){
       __isBottom=false;
@@ -277,6 +299,7 @@ namespace unimelb {
 
     /// Convenient wrapper.
     void Binary_WrappedJoin(WrappedRange *R1, WrappedRange *R2);
+
   };
 
   inline raw_ostream& operator<<(raw_ostream& o, WrappedRange r) {
@@ -286,6 +309,53 @@ namespace unimelb {
 
   WrappedRange WrappedMeet(WrappedRange *, WrappedRange *);
 
+  inline bool IsMSBOne(const APInt &x){
+    // This tests the high bit of the APInt to determine if it is set.
+    return (x.isNegative());
+    }
+  
+  inline bool IsMSBZero(const APInt &x){
+    return (!x.isNegative());
+  }
+  
+  /// Return true if x is lexicographically smaller than y.
+  inline bool Lex_LessThan(const APInt &x, const APInt &y){
+    bool a = !x.isNegative(); //IsMSBZero(x);
+    bool b = !y.isNegative(); //IsMSBZero(y);
+    if (!a &&  b) return false;
+    else if ( a && !b) return true;
+    else if (!a && !b) return x.slt(y);
+    else return x.ult(y);      
+  }
+  
+  /// Return true if x is lexicographically smaller or equal than y.
+  inline bool Lex_LessOrEqual(const APInt &x, const APInt &y){
+    bool a = !x.isNegative(); //IsMSBZero(x);
+    bool b = !y.isNegative(); //IsMSBZero(y);
+    if (!a &&  b) return false;
+    else if ( a && !b) return true;
+    else if (!a && !b) return x.sle(y);
+    else return x.ule(y);
+  }
+  
+  /// Lexicographical maximum
+  inline  APInt Lex_max(const APInt &x, const APInt &y){
+    return (Lex_LessOrEqual(x,y)? y : x);
+  }
+  
+  /// Lexicographical minimum
+  inline  APInt Lex_min(const APInt &x, const APInt &y){
+    return (Lex_LessOrEqual(x,y)? x : y);
+  }
+
+  /// Return a wrapped interval that covers singleton x and y.
+  inline WrappedRange 
+  mkSmallerInterval(const APInt &x, const APInt &y, unsigned width){
+    WrappedRange R1(x, x, width);    
+    WrappedRange R2(y, y, width);    
+    R1.join(&R2);
+    return R1;
+  }
 
 } // end namespace
 

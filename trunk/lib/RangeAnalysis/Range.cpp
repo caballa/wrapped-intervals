@@ -35,7 +35,7 @@ void CheckIntervalIsWellFormed(Range *I, std::string CallerName){
       I->print(dbgs());
       dbgs() << " defined in function " 
 	     <<  Ins->getParent()->getParent()->getName() << "\n";
-      assert(false && "The interval is not well formed!");
+      llvm_unreachable("The interval is not well formed!");
     }
   }
   else{
@@ -45,7 +45,7 @@ void CheckIntervalIsWellFormed(Range *I, std::string CallerName){
       I->print(dbgs());
       dbgs() << " defined in function " 
 	     <<  Ins->getParent()->getParent()->getName() << "\n";
-      assert(false && "The interval is not well formed!");
+      llvm_unreachable("The interval is not well formed!");
     }
   }
 }
@@ -320,7 +320,10 @@ void wideningCousot77(Range *PreviousI, Range *CurrentI){
 /// much wider. Compute a finite set of "jump points" J (e.g., the set
 /// of all integer constants in the program augmented with MININT and
 /// MAXINT). Then, widen([l,u])=[max{x \in J | x <=l},min{x \in J,u <= x}]
-void widenOneInterval(Range * Rng, const ConstantSetTy &JumpSet, 
+/// That is, it chooses the greatest of the constants that is smaller
+/// than lb and the smallest of the constants that it is bigger than ub.
+#if 0
+void widenOneInterval(Range * Rng, const std::vector<int64_t> &JumpSet, 
 		      APInt &lb, APInt &ub){
 
   // Initial values 
@@ -333,28 +336,79 @@ void widenOneInterval(Range * Rng, const ConstantSetTy &JumpSet,
     ub= APInt::getMaxValue(Rng->getWidth());
   }
 
-  for (ConstantSetTy::iterator 
-	 I=JumpSet.begin(), 
-	 E=JumpSet.end(); I != E; ++I){ 
-
-    APInt LandMark(Rng->getWidth(), *I, Rng->IsSigned());
+  for (unsigned int i=0 ; i<JumpSet.size() ; i++){
+    APInt LandMark(Rng->getWidth(), JumpSet[i], Rng->IsSigned());
     if (Rng->IsSigned()){
-      if (Rng->getLB().sge(LandMark)) 
+      if (Rng->getLB().sgt(LandMark)) 
 	lb = BaseRange::smax(lb,LandMark) ; 
-      if (Rng->getUB().sle(LandMark)) 
+      if (Rng->getUB().slt(LandMark)) 
 	ub = BaseRange::smin(ub,LandMark) ;
     }
     else{
-      if (Rng->getLB().uge(LandMark)) 
+      if (Rng->getLB().ugt(LandMark)) 
 	lb = BaseRange::umax(lb,LandMark);
-      if (Rng->getUB().ule(LandMark)) 
+      if (Rng->getUB().ult(LandMark)) 
 	ub = BaseRange::umin(ub,LandMark);
     }
   }
+
+  DEBUG(dbgs() << "Widen interval based on landmarks: " 
+	<< "widen([" << Rng->getLB() << "," << Rng->getUB() << "]) ="
+	<< "[" << lb << "," << ub << "]\n");
 }
+#else
+/////
+// Optimized version that speed up the analysis significantly.
+// This version takes advantage of the fact that JumpSet is sorted.
+/////
+void widenOneInterval(Range * Rng, const std::vector<int64_t> &JumpSet, 
+		      APInt &lb, APInt &ub){
+
+  assert(Rng->IsSigned()); // assuming signed integers
+  unsigned int width = Rng->getWidth();
+  /////////////////////////////////////////////////////////////////
+  // lb_It points to the first element that is not less than lb
+  /////////////////////////////////////////////////////////////////
+  std::vector<int64_t>::const_iterator lb_It= 
+    std::lower_bound(JumpSet.begin(), JumpSet.end(), Rng->getLB().getSExtValue());
+  if (lb_It == JumpSet.end()) // nobody is smaller than Rng->getLB()
+    lb = APInt::getSignedMinValue(width);
+  else{  
+    int64_t MIN = APInt::getSignedMinValue(width).getSExtValue();
+    int64_t cand;
+    ( (lb_It == JumpSet.begin())? cand = *lb_It : cand = *(lb_It - 1));
+    if (cand < MIN)
+      lb = APInt::getSignedMinValue(width);
+    else{
+      APInt LB_LandMark(Rng->getWidth(), cand, Rng->IsSigned());
+      lb=LB_LandMark;
+    }
+  }
+  /////////////////////////////////////////////////////////////////
+  // ub_It points to the first element that is greater than ub
+  /////////////////////////////////////////////////////////////////
+  std::vector<int64_t>::const_iterator ub_It= 
+    std::upper_bound(JumpSet.begin(), JumpSet.end(), Rng->getUB().getSExtValue());
+  if (ub_It == JumpSet.end()) // nobody is greater than Rng->getUB()
+    ub = APInt::getSignedMaxValue(width);
+  else{
+    int64_t MAX = APInt::getSignedMaxValue(width).getSExtValue();
+    if (*ub_It > MAX)
+      ub = APInt::getSignedMaxValue(width);
+    else{
+      APInt UB_LandMark(Rng->getWidth(), *ub_It, Rng->IsSigned());
+      ub = UB_LandMark;
+    }
+  }
+
+  DEBUG(dbgs() << "Widen interval based on landmarks: " 
+	<< "widen([" << Rng->getLB() << "," << Rng->getUB() << "]) ="
+	<< "[" << lb << "," << ub << "]\n");
+}
+#endif /* end widenOneInterval */
 
 void wideningJump(Range *Old, Range * New, 
-		  const ConstantSetTy &JumpSet,
+		  const std::vector<int64_t> &JumpSet,
 		  APInt &lb, APInt &ub){
 
   APInt a = Old-> getLB();
@@ -383,13 +437,13 @@ void wideningJump(Range *Old, Range * New,
     widenOneInterval(New, JumpSet, lb, ub_);
     return;
   }
-  assert(false && "Unsupported case");
+  llvm_unreachable("Unsupported case");
 }
 
 
 /// Wrapper to call different widening methods.
 void Range::widening(AbstractValue *PreviousV, 
-		     const ConstantSetTy &JumpSet){
+		     const std::vector<int64_t> &JumpSet){
 
   switch(WideningMethod){
   case NOWIDEN:
@@ -419,14 +473,13 @@ void Range::widening(AbstractValue *PreviousV,
       setLB(widenLB);
       setUB(widenUB);
     END:
-      // 09/10/12
-      // normalize();
+      CheckIntervalIsWellFormed(this, "WIDENING");
       DEBUG(dbgs() << "\tWIDENING (based on jumps) has been applied:" 
 	           << *this << "\n");
     }
     return;
   default:
-    assert(false && "ERROR: widening method not implemented\n");
+    llvm_unreachable("ERROR: widening method not implemented");
   }
 }
   
@@ -526,11 +579,9 @@ void Range::filterSigma(unsigned Pred,  AbstractValue *V1, AbstractValue *V2){
   else if (!Var1->isConstant() &&  !Var2->isConstant()){
       filterSigma_TwoVars(Pred, Var1, Var2);
   }
-  else{
-    assert(false && "Unexpected case in filterSigma");
-  }
-  // 09/10/12
-  //normalize();
+  else
+    llvm_unreachable("Unexpected case in filterSigma");
+
 }
 
 /// Case when one is variable and the other a constant in the branch
@@ -649,7 +700,7 @@ void Range::filterSigma_VarAndConst(unsigned Pred, Range *V, Range *N){
       return;
     }  
   default:
-    assert(false && "unexpected error in filterSigma_VarAndConst");
+    llvm_unreachable("Unexpected error in filterSigma_VarAndConst");
   }
 }
 
@@ -836,8 +887,6 @@ visitArithBinaryOp(AbstractValue* V1, AbstractValue* V2,
   CheckIntervalIsWellFormed(LHS,"DoArithBinaryOp");
 #endif 
 
-  // 09/10/12
-  // normalize();      
   DEBUG(dbgs()<< *LHS << "\n");   
   return LHS;
 }
@@ -960,7 +1009,7 @@ void Range::DoArithBinaryOp(Range *LHS, Range *Op1, Range *Op2,
     break;
   default:
     dbgs() << OpCodeName << "\n";
-    assert(false && "Arithmetic operation not implemented");
+    llvm_unreachable("Arithmetic operation not implemented");
   } // end switch
 }
 
@@ -1005,12 +1054,17 @@ void Range:: DoMultiplication(bool IsSignedOp,
   }
 }
 
-/// Auxiliary method to remove [0,0]. This method returns either one 
-/// interval [a,b] or the set of intervals { [a,-1], [1, b] }.
+/// Auxiliary method to remove [0,0]. 
+/// pre: [a,b] != [0,0]
+/// if [0,b]           then { [1,b]  } where b > 0
+/// if [a,0]           then { [a,-1] } where a < 0
+/// if [0,0] \in [a,b] then { [a,-1], [1, b] }
+/// else                    { [a,b] }
 std::vector<RangePtr> 
 purgeZero(const APInt &x, const APInt &y, unsigned width, bool IsSignedOp){
-  bool IsSigned=true;
+  assert( !(x == 0  && y == 0) && "Interval cannot be [0,0]");
 
+  bool IsSigned=true;
   // Temporary wrapped interval for zero
   APInt Zero_lb(width, 0, IsSigned);          // 000...0 
   APInt Zero_ub(width, 0, IsSigned);          // 000...0 
@@ -1020,36 +1074,33 @@ purgeZero(const APInt &x, const APInt &y, unsigned width, bool IsSignedOp){
   std::vector<RangePtr> res;
   if (Zero.lessOrEqual(s.get())){
     if (x == 0 ){
-      if (y != 0) {
-	// Does not cross the south pole
-	RangePtr s(new Range(x+1,y,width,IsSigned)); 
-	res.push_back(s);      
-      }
+      assert( (y.isStrictlyPositive())  && "Upper bound must be greater than 0");
+      // Does not cross the south pole
+      RangePtr s(new Range(x+1,y,width,IsSigned)); 
+      res.push_back(s);      
     }
     else{
       if (y == 0){
+	assert(x.isNegative() && "Lower bound must be smaller than 0");
 	// If interval is e.g., [1000,0000] then we keep one interval
 	APInt minusOne = APInt::getMaxValue(width); // 111...1
 	RangePtr s(new Range(x,minusOne,width,IsSigned)); // [x, 111....1]
 	res.push_back(s);	
       }
       else{
-	// Split into two intervals
+	// General case: split into two intervals
 	APInt plusOne(width, 1, IsSigned);          // 000...1 
 	APInt minusOne = APInt::getMaxValue(width); // 111...1
 	RangePtr s1(new Range(x,minusOne,width,IsSigned)); // [x, 111....1]
 	RangePtr s2(new Range(plusOne,y,width,IsSigned)); // [000...1,  y] 
-	//dbgs()<< "{" << *(s1.get()) << "," << *(s2.get()) << "}\n";
 	res.push_back(s1);
 	res.push_back(s2);
       }
     }
   }
-  else{  
-    // No need of split
-    //dbgs()<< "{" << *(s.get()) << "}\n";
-    res.push_back(s);
-  }
+  else    
+    res.push_back(s); // No need of split
+
   return res;
 }
 
@@ -1068,14 +1119,16 @@ void Range::DoDivision(bool IsSignedOp,
 
   IsOverflow=false; // by default no overflow
 
+  // We remove the interval [0,0] from Divisor
   std::vector<RangePtr> s1 = 
     purgeZero(Divisor->getLB(), Divisor->getUB(), 
 	      Divisor->getLB().getBitWidth(), IsSignedOp);
 
+  // dbgs() << "Divisor " << *Divisor << " split into : " << s1 << "\n";
+
   APInt a = Dividend->getLB();
   APInt b = Dividend->getUB();
 
-  // We remove the interval [0,0] from Divisor
   std::vector<APInt> extremes;
   for (std::vector<RangePtr>::iterator Divisors = s1.begin(), 
 	 E1 =s1.end(); Divisors != E1; ++Divisors){
@@ -1191,7 +1244,7 @@ void DoRemCases(const APInt &a, const APInt &b, const APInt &c, const APInt &d,
   default:
     {
       dbgs() << "[" << a << "," << b << "]" << " % " << "[" << c << "," << d << "]\n" ;
-      assert(false && "SRem: case not implemented");
+      llvm_unreachable("SRem: case not implemented");
     }
   }
   return;
@@ -1263,8 +1316,6 @@ visitCast(Instruction &I,  AbstractValue * V, TBool * TB, bool IsSigned){
     NumOfOverflows++;
   }
 
-  // 09/10/12
-  // normalize();    
   DEBUG(dbgs() << "\t[RESULT]");
   DEBUG(LHS->print(dbgs()));
   DEBUG(dbgs() << "\n");      
@@ -1400,7 +1451,7 @@ DoCast(Range *LHS, Range *RHS,
       LHS->setUB(RHS->getUB());    
       break;
     default:
-      assert(false && "ERROR: unknown instruction in BasicCast");
+      llvm_unreachable("ERROR: unknown instruction in BasicCast");
     }  
   } 
 #ifdef CHECK_WELLFORMED 
@@ -1435,8 +1486,6 @@ AbstractValue * Range::
   CheckIntervalIsWellFormed(LHS,"DoBitwiseBinaryOp");
 #endif
 
-  // 09/10/12
-  // normalize();
   DEBUG(LHS->printRange(dbgs())); 
   DEBUG(dbgs() << "\n");        
   return LHS;  
@@ -1587,7 +1636,7 @@ void Range::
     }
     break;
   default:
-    assert(false && "bitwise shift operation not implemented");
+    llvm_unreachable("bitwise shift operation not implemented");
   }    
 }
 
@@ -1653,7 +1702,7 @@ void Range::DoLogicalBitwise(Range *LHS, Range *Op1, Range *Op2,
     }
     break;
   default:     
-    assert(false && "This should not happen");
+    llvm_unreachable("This should not happen");
   } // end switch  
 
   // Important normalization
@@ -1739,7 +1788,7 @@ void Range::signedOr(Range *Op1, Range*Op2){
     break;
   default:
     dbgs() << "Uncovered case: " << case_val << "\n";
-    assert(false && "This should not happen");
+    llvm_unreachable("This should not happen");
   }  
   setLB(lb);
   setUB(ub);

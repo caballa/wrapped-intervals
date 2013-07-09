@@ -124,14 +124,15 @@ namespace unimelb {
     virtual ~BaseRange(){}
 
     //Access methods
+    // We return a reference to avoid creating too many APInt's
     inline const APInt & getUB() const { return UB;}
     inline const APInt & getLB() const { return LB;}
     // inline APInt  getUB() const{ return UB;}
     // inline APInt  getLB() const{ return LB;}
 
     inline unsigned getWidth(){ 
-      assert(LB.getBitWidth() == UB.getBitWidth());
-      assert(LB.getBitWidth() == width);
+      // assert(LB.getBitWidth() == UB.getBitWidth());
+      // assert(LB.getBitWidth() == width);
       return width;
     }
 
@@ -144,10 +145,11 @@ namespace unimelb {
     }
 
     inline bool IsZeroRange() const{
-      if (IsConstantRange()){
-	return (LB == 0);
-      }
-      return false;
+      return (LB == UB && LB == 0);
+      // if (IsConstantRange()){
+      // 	return (LB == 0);
+      // }
+      // return false;
     }
 
     /////////////////////////////////////////////////////////////////////
