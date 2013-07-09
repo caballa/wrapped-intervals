@@ -19,8 +19,6 @@
 
 #include <set>
 
-#define REPRODUCE_APLAS12
-
 using namespace llvm;
 
 namespace unimelb {
@@ -111,7 +109,6 @@ namespace unimelb {
       if (F->hasFnAttr(Attribute::AlwaysInline)) return false;
 
       if (!F->mayBeOverridden()){       
-#ifdef REPRODUCE_APLAS12
 	// Since we do not perform inter-procedural analysis and we
 	// always analyze each function assuming worst-case scenario the analysis
 	// of a function is sound even if its address can be taken.
@@ -123,9 +120,6 @@ namespace unimelb {
 	/* }   */
 	/* else */
 	return (!AddressIsTaken(F));
-#else
-	return true;
-#endif
       }
       else{
 	//DEBUG(dbgs() << "\t" << F->getName() << " may be overriden.\n");
@@ -139,21 +133,47 @@ namespace unimelb {
       return C->getValue().getSExtValue();
     }
 
-    ///  Record constants that appear in the program and create their
-    ///  corresponding abstract values.
+    ///  Create abstract value for each constant in the program.
     static void
-    addTrackedIntegerConstants(Function *F, 
-			       bool IsAllSigned, 
-			       ConstantSetTy &ConstSet,
+    addTrackedIntegerConstants(Function *F, bool IsAllSigned, 
 			       std::vector<std::pair<Value*,ConstantInt*> > &NewAbsVals){
+
+      LLVMContext *ctx = &F->getContext();
+
+      
+      for (inst_iterator I = inst_begin(F), E=inst_end(F) ; I != E; ++I){
+	for (User::op_iterator i = I->op_begin(), e = I->op_end(); i != e; ++i){
+	  if (ConstantInt *C = dyn_cast<ConstantInt>(*i)){
+	    unsigned width;
+	    if (Utilities::getIntegerWidth(C->getType(),width)){
+	      if (width <= 64) // Programs like susan has i288 constants!
+		NewAbsVals.push_back(std::make_pair(&*C,C));
+	    }
+	  }
+	  else{	
+	    if (Constant *CC = dyn_cast<Constant>(*i)){
+	      if (CC->isNullValue()){ // "null"
+		// Create an integer constant with value 0 and width 32 bits.
+		ConstantInt * Zero = 
+		  cast<ConstantInt>(ConstantInt::get(Type::getInt32Ty(*ctx), 
+						     0, 
+						     IsAllSigned));
+		NewAbsVals.push_back(std::make_pair(&*CC,Zero));
+	      }
+	    }
+	  }
+	} // end for
+      } // end for      
+    }
+
+    ///  Record constants that appear in the program
+    static void recordIntegerConstants(Function *F, std::set<int64_t> &ConstSet){
       //////////////////////////////////////////////////////////////////////////////
       // We also insert the maximum and minimum values for unsigned and
       // signed versions for common widths (8,16, and 32). This is
       // important for domains like WrappedRangeLattice in order to avoid
       // widening to jump too much when the intervals wraparound.
       //////////////////////////////////////////////////////////////////////////////
-      LLVMContext *ctx = &F->getContext();
-
       int64_t umin8  = APInt::getMinValue(8).getZExtValue();
       int64_t smin8  = APInt::getSignedMinValue(8).getSExtValue();
       int64_t umax8  = APInt::getMaxValue(8).getZExtValue();
@@ -174,47 +194,47 @@ namespace unimelb {
       ConstSet.insert(umin32); ConstSet.insert(umax32);
       ConstSet.insert(smin32); ConstSet.insert(smax32);
       
-      ////////////////////////////////////////////////////////////////////////////////////
-      
       for (inst_iterator I = inst_begin(F), E=inst_end(F) ; I != E; ++I){
 	for (User::op_iterator i = I->op_begin(), e = I->op_end(); i != e; ++i){
 	  if (ConstantInt *C = dyn_cast<ConstantInt>(*i)){
 	    unsigned width;
 	    if (Utilities::getIntegerWidth(C->getType(),width)){
 	      if (width <= 64){ // Programs like susan has i288 constants!
-		NewAbsVals.push_back(std::make_pair(&*C,C));
 		ConstSet.insert(convertConstantIntToint64_t(C)-1);
 		ConstSet.insert(convertConstantIntToint64_t(C));
 		ConstSet.insert(convertConstantIntToint64_t(C)+1);
 	      }
 	    }
 	  }
-	  else{	
-	    if (Constant *CC = dyn_cast<Constant>(*i)){
-	      if (CC->isNullValue()){ // "null"
-		// Create an integer constant with value 0 and width 32 bits.
-		ConstantInt * Zero = 
-		  cast<ConstantInt>(ConstantInt::get(Type::getInt32Ty(*ctx), 
-						     0, 
-						     IsAllSigned));
-		NewAbsVals.push_back(std::make_pair(&*CC,Zero));
-	      }
-	    }
-	  }
 	} // end for
-      } // end for
+      } // end for      
     }
 
     // For debugging
-    static void printIntConstants(ConstantSetTy JumpSet){
+    static void printIntConstants(const std::set<int64_t> &JumpSet){
       dbgs() << "PROGRAM INTEGER CONSTANTS:{ ";
-      for (ConstantSetTy::iterator 
-	     I=JumpSet.begin(), 
-	     E=JumpSet.end(); I != E; ++I){
-	dbgs () << *I << ";";
-      }
+      for(std::set<int64_t>::iterator i= JumpSet.begin(), e = JumpSet.end(); i!=e; ++i)
+	dbgs () << *i << ";";
       dbgs() << "}\n";
     }
+    static void printIntConstants(const std::vector<int64_t> &JumpSet){
+      dbgs() << "PROGRAM INTEGER CONSTANTS:{ ";
+      for(unsigned int i=0; i < JumpSet.size(); i++)
+	dbgs () << JumpSet[i] << ";";
+      dbgs() << "}\n";
+    }
+
+    // Lexicographical order
+    static bool Lex_LessThan_Comp(int64_t x,int64_t y) {
+      bool IsPositive_x, IsPositive_y;
+      (x < 0 ? IsPositive_x=false:IsPositive_x=true);
+      (y < 0 ? IsPositive_y=false:IsPositive_y=true);
+      
+      if (IsPositive_x &&  !IsPositive_y) return true;
+      else if ( !IsPositive_x && IsPositive_y) return false;
+      else return x < y;
+    }
+  
 
   };
 } // End namespace

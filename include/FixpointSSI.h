@@ -112,36 +112,34 @@ namespace unimelb {
     BinaryConstraint(unsigned _pred, Value* _Op1, Value* _Op2): 
       pred(_pred), Op1(_Op1), Op2(_Op2){}
     /// Destructor of the class.
-    ~BinaryConstraint(){ 
-      //dbgs() << "Destructor of BinaryConstraint is called!\n";
-    }
+    ~BinaryConstraint(){ }
     
     unsigned getPred(){ return pred;}
     unsigned getPred() const { return pred;}
     bool isConstantOperand(unsigned i){
-      if      (i==0) return isa<ConstantInt>(Op1);
-      else if (i==1) return isa<ConstantInt>(Op2);
-      else           assert(false);
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return isa<ConstantInt>(Op1);
+      else  
+	return isa<ConstantInt>(Op2);
     }
     bool isEqual(BinaryConstraint *C){
       return ( (pred == C->getPred()) && (Op1 == C->getOperand(0)) && 
 	       (Op2 == C->getOperand(1)));
     }
     Value*   getOperand(unsigned i){ 
-      if      (i==0) return Op1;
-      else if (i==1) return Op2;
-      else{
-	assert(false);
-	return NULL;
-      }
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return Op1;
+      else 
+	return Op2;
     }
     Value*   getOperand(unsigned i) const{ 
-      if      (i==0) return Op1;
-      else if (i==1) return Op2;
-      else{           
-	assert(false);
-	return NULL;
-      }
+      assert(i == 0 || i == 1);
+      if (i==0) 
+	return Op1;
+      else 
+	return Op2;
     }
     
     void swap(){
@@ -201,7 +199,7 @@ namespace unimelb {
 	    switch(C->getSExtValue()){ // int64_t 
 	    case 0: dbgs() << "false"; break;
 	    case 1: dbgs() << "true";  break;
-	    default: assert(false);
+	    default: llvm_unreachable("Problems during printOperand");
 	    }
 	  }
 	  return;
@@ -225,10 +223,10 @@ namespace unimelb {
   };
 
 
-  //typedef std::set<BinaryConstraintPtr, BinaryConstraintCmp> BinaryConstraintSetTy;
-  //typedef DenseMap<Value* , BinaryConstraintSetTy * > FiltersTy;
-
   typedef DenseMap<Value* , BinaryConstraintPtr> SigmaFiltersTy;
+
+  // This only used for widening
+  enum OrderingTy { LESS_THAN, LEX_LESS_THAN };
 
   class FixpointSSI {    
   private:
@@ -301,7 +299,7 @@ namespace unimelb {
     void FunctionWithoutCode(CallInst *, Function *, Instruction *);
 
     /// Cleanup to make sure the analysis of a function does not
-    /// interfere with others.
+    /// interfere with other functions.
     inline void Cleanup(){
       ValueState.clear();
       TrackedCondFlags.clear();
@@ -313,14 +311,16 @@ namespace unimelb {
 #ifdef SKIP_TRAP_BLOCKS
       TrackedTrapBlocks.clear();
 #endif 
-
+      ConstSet.clear();
     }
     
   public:    
     /// Constructors of the class
-    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA);
-    FixpointSSI(Module *M, unsigned WidL, unsigned NarL, AliasAnalysis* AA, 
-		bool isSigned);
+    FixpointSSI(Module *, unsigned WidL, unsigned NarL, AliasAnalysis*, 
+		OrderingTy);
+    FixpointSSI(Module *, unsigned WidL, unsigned NarL, AliasAnalysis*, bool isSigned, 
+		OrderingTy);
+		
     /// Destructor of the class
     virtual ~FixpointSSI();
     /// Methods for support type inquiry through isa, cast, and dyn_cast.
@@ -381,7 +381,8 @@ namespace unimelb {
     unsigned WideningLimit; 
     /// Set of integer constants that appear in the program. Used by
     /// jump-set widening.
-    ConstantSetTy ConstSet; 
+    std::vector<int64_t> ConstSet; 
+    OrderingTy ConstSetOrder;
     /// If NarrowingLimit zero then narrowing will not be applied.
     unsigned NarrowingLimit;
     /// Internal flag for the analysis to know that it is performing

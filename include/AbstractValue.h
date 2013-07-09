@@ -26,16 +26,9 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
-#include <iostream>
-#include <set>
 
 using namespace llvm;
-
 namespace unimelb {
-
-  //typedef SmallPtrSet<ConstantInt*, 16> ConstantSetTy;
-  typedef int64_t ConstantTy;
-  typedef std::set<ConstantTy> ConstantSetTy;
 
   /// Hierarchy members that can be instantiated
   typedef enum {    
@@ -135,7 +128,7 @@ namespace unimelb {
     virtual bool isEqual(AbstractValue *V) = 0;
     /// Widen this by using V, and optionally a jump-set J.
     /// lessOrEqual(V) must return true.
-    virtual void widening(AbstractValue *V, const ConstantSetTy &J){};
+    virtual void widening(AbstractValue *V, const std::vector<int64_t> &J) = 0;
     /// Pretty-printer of the abstract value.
     virtual void print(raw_ostream &Out) const{
       if (!isConstant()){

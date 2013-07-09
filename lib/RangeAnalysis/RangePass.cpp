@@ -76,20 +76,16 @@ numFuncs("numfuncs",
        cl::Hidden,
        cl::desc("Number of functions to be analyzed (default = -1, all)")); 
 
-// To reproduce numbers closer to APLAS'12 submission.
-// Although this is not possible anymore if we compile programs with
-// option -fcatch-undefined-ansic-behavior for running IOC.
-#define REPRODUCE_APLAS12
 // For range analysis
 #define SIGNED_RANGE_ANALYSIS true
 // For verbose mode
-//#define VERBOSE
+// #define VERBOSE
 // Count a difference if the precision improvement is strictly greater
 // than K. The value of K should be defined in terms of cardinality of
 // the result of gamma function.
 #define PRECISION_TOLERANCE 0
 // For printing analysis results
-#define PRINT_RESULTS
+//#define PRINT_RESULTS
 
 namespace unimelb {
 
@@ -224,9 +220,8 @@ namespace unimelb {
     RangeAnalysis(Module *M, 
 		  unsigned WL, unsigned NL, 
 		  AliasAnalysis *AA,  bool isSigned): 
-      FixpointSSI(M,WL,NL,AA,isSigned){
-      // Here if we want a signed or unsigned analysis
-      IsSigned=isSigned;
+      FixpointSSI(M,WL,NL,AA,isSigned,LESS_THAN), 
+      IsSigned(isSigned){
     }
 
     // Methods that allows Fixpoint creates Range objects
@@ -259,7 +254,7 @@ namespace unimelb {
     WrappedRangeAnalysis(Module *M, 
 			 unsigned WL, unsigned NL, 
 			 AliasAnalysis *AA): 
-      FixpointSSI(M,WL,NL,AA){}
+      FixpointSSI(M,WL,NL,AA,LEX_LESS_THAN){}
 
     // Methods that allows Fixpoint creates Range objects
     virtual AbstractValue* initAbsValBot(Value *V){
@@ -288,7 +283,6 @@ namespace unimelb {
 
   /// Return true if the analysis will consider F.
   bool IsAnalyzable(const Function *F, CallGraph &CG){
-#ifdef REPRODUCE_APLAS12
       // The numbers reported in the APLAS paper were obtained by
       // ignoring functions which were not called by "main".
       if (!Utilities::IsTrackableFunction(F)) return false;
@@ -300,9 +294,6 @@ namespace unimelb {
 	}
       }
       return true;
-#else
-      return (Utilities::IsTrackableFunction(F));
-#endif 
   }
 
   /// Common analyses needed by the range analysis.

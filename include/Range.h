@@ -78,16 +78,18 @@ namespace unimelb {
       BaseRange(V, IsSigned, true){
       assert(IsSigned && "Intervals must be signed");
       if (B->isTrue()){
-	setLB(1); setUB(1);
+	setLB(1); 
+	setUB(1);
       }
       else{
 	if (B->isFalse()){
-	  setLB(0); setUB(0);
+	  setLB(0); 
+	  setUB(0);
 	}
 	else{
-	  // FIXME: we should say  [0,1]
-	  makeTop();
-	  }
+	  setLB(0); 
+	  setUB(1);
+	}
       }
     }
     
@@ -108,7 +110,9 @@ namespace unimelb {
     }
 
     /// To support type inquiry through isa, cast, and dyn_cast.
-    static inline bool classof(const Range *) { return true; }
+    static inline bool classof(const Range *) { 
+      return true; 
+    }
     static inline bool classof(const BaseRange *V) {
       return (V->getValueID() == RangeId);
     }
@@ -133,20 +137,6 @@ namespace unimelb {
       if (IsTop()) return;
       if (isBot()) return;
       normalizeTop();
-      // if (isSigned){
-      // 	if (getLB() == APInt::getSignedMinValue(width) &&
-      // 	    getUB() == APInt::getSignedMaxValue(width)){
-      // 	makeTop();
-      // 	return;
-      // 	}
-      // }
-      // else{
-      // 	if (getLB() == APInt::getMinValue(width) &&
-      // 	    getUB() == APInt::getMaxValue(width)){
-      // 	  makeTop();
-      // 	  return;
-      // 	}
-      // }
     }
 
     inline void normalizeTop(){
@@ -190,12 +180,12 @@ namespace unimelb {
     virtual bool lessOrEqual(AbstractValue * V);
     virtual void join(AbstractValue *V);
     virtual void GeneralizedJoin(std::vector<AbstractValue *>){
-      assert(false && "This is a lattice so this method should not be called");
+      llvm_unreachable("This is a lattice so this method should not be called");
     }
 
     virtual void meet(AbstractValue *V1,AbstractValue *V2);
     virtual bool isEqual(AbstractValue *V);
-    virtual void widening(AbstractValue *, const ConstantSetTy &); 
+    virtual void widening(AbstractValue *, const std::vector<int64_t> &); 
 		
     /// Return true is this is syntactically identical to V.
     virtual bool isIdentical(AbstractValue *V);
@@ -263,6 +253,14 @@ namespace unimelb {
 
   inline raw_ostream& operator<<(raw_ostream& o, Range r) {
     r.printRange(o);
+    return o;
+  }
+
+  // For debugging 
+  inline raw_ostream& operator<<(raw_ostream& o, std::vector<RangePtr> vs) {
+    for(unsigned int i=0; i<vs.size();i++){
+      o << *(vs[i].get());
+    }
     return o;
   }
 
