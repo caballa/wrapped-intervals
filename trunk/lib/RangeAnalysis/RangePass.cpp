@@ -85,7 +85,7 @@ numFuncs("numfuncs",
 // the result of gamma function.
 #define PRECISION_TOLERANCE 0
 // For printing analysis results
-//#define PRINT_RESULTS
+#define PRINT_RESULTS
 
 namespace unimelb {
 
