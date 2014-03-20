@@ -28,7 +28,7 @@
 /// Bottom is represented with the range [0,-1]. 
 ///////////////////////////////////////////////////////////////////////////////
 
-// #define DEBUG_TYPE "RangeAnalysis"
+#define DEBUG_TYPE "RangeAnalysis"
 
 #include "AbstractValue.h"
 #include "Support/Utils.h"
@@ -69,9 +69,9 @@ namespace unimelb {
     {     
       isSigned = IsSigned;  
       unsigned Width = 0;
-      Type * t = NULL;
-      bool IsTrackableType = Utilities::getTypeAndWidth(var, t, Width);
-      assert(IsTrackableType && "This should not happen!");
+      // Type * t = NULL;
+      // bool IsTrackableType = Utilities::getTypeAndWidth(var, t, Width);
+      // assert(IsTrackableType && "This should not happen!");
       width=Width;
       if (isSigned){
 	setLB(APInt::getSignedMinValue(width));

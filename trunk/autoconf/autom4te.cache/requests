@@ -11,8 +11,8 @@
                       ],
                       [
                         '/usr/share/autoconf/autoconf/autoconf.m4f',
-                        '/home/jorge/SvnReps/Systems/llvm/autoconf/m4/config_makefile.m4',
-                        '/home/jorge/SvnReps/Systems/llvm/autoconf/m4/config_project.m4',
+                        '/home/jorge/SvnReps/UNIMELB/trunk/verification/domains/code/wrapped-intervals/.llvm-svn/autoconf/m4/config_makefile.m4',
+                        '/home/jorge/SvnReps/UNIMELB/trunk/verification/domains/code/wrapped-intervals/.llvm-svn/autoconf/m4/config_project.m4',
                         'configure.ac'
                       ],
                       {
@@ -22,9 +22,9 @@
                         'm4_pattern_forbid' => 1,
                         'include' => 1,
                         'AC_DEFUN_ONCE' => 1,
+                        'AC_DEFUN' => 1,
                         'm4_include' => 1,
                         'LLVM_CONFIG_PROJECT' => 1,
-                        'AC_DEFUN' => 1,
                         '_m4_warn' => 1,
                         'AU_DEFUN' => 1
                       }
