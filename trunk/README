@@ -10,14 +10,11 @@ Checkout and installation of LLVM and Clang
 
 2) Checkout LLVM:
    LLVM_SRC=any_directory_you_like
-   svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm
-   Download svn revision 139364
+   svn co -r 139364 http://llvm.org/svn/llvm-project/llvm/trunk llvm 
 
 3) Checkout Clang (C/C++ frontend):
    cd LLVM_SRC/tools
-   svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
-   To avoid conflicts between llvm and clang versions make sure you
-   download clang version 3.0 tags/RELEASE_30/final 145349
+   svn co -r 139290 http://llvm.org/svn/llvm-project/cfe/trunk clang
 
 4) Build LLVM and Clang:
 
@@ -33,10 +30,10 @@ Checkout and installation the Wrapped Interval Analysis
 
    svn checkout http://wrapped-intervals.googlecode.com/svn/trunk/ wrapped-intervals
    cd wrapped-intervals
-  ./configure --with-llvmsrc=LLVM_SRC
-  ./make
-  cd ./docs && make  (optional)
-  Change CLANG_PATH and OPT_PATH in the tools/run.sh script
+   ./configure --with-llvmsrc=LLVM_SRC --with-llvmobj=LLVM_SRC/build
+   ./make
+   cd ./docs && make  (optional)
+   Change CLANG_PATH and OPT_PATH in the tools/run.sh script
 
 Run 
 ================================================================
