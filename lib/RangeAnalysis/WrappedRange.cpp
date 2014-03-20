@@ -17,6 +17,8 @@
 using namespace llvm;
 using namespace unimelb;
 
+void test_GeneralizedJoin();
+
 // For debugging
 //#define DEBUG_FILTER_SIGMA
 //#define DEBUG_EVALUATE_GUARD
@@ -2067,7 +2069,7 @@ AbstractValue* WrappedRange::
 visitArithBinaryOp(AbstractValue *V1,AbstractValue *V2,
 		   unsigned OpCode, const char *OpCodeName){
 
-  //test_GeneralizedJoin();
+  // test_GeneralizedJoin();
   
   WrappedRange *Op1 = cast<WrappedRange>(V1);
   WrappedRange *Op2 = cast<WrappedRange>(V2);
@@ -2636,6 +2638,28 @@ void test_GeneralizedJoin(){
     dbgs()<< "Result for test 2: " ;
     dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10, false) << "]\n";
   }
+
+  {
+    APInt a(3,   0 , false);  APInt b(3,   1 , false);
+    APInt c(3,   7 , false);  APInt d(3,   0 , false);
+    APInt e(3,   6 , false);  APInt f(3,   7 , false);
+    APInt zero(3, 0, false); 
+    // Temporary constructors
+    AbstractValue * R1 = dyn_cast<AbstractValue>(new WrappedRange(a,b,a.getBitWidth()));
+    AbstractValue * R2 = dyn_cast<AbstractValue>(new WrappedRange(c,d,c.getBitWidth()));
+    AbstractValue * R3 = dyn_cast<AbstractValue>(new WrappedRange(e,f,e.getBitWidth()));
+    AbstractValue * R4 = dyn_cast<AbstractValue>(new WrappedRange(a,b,a.getBitWidth()));
+    std::vector<AbstractValue*> vv;
+    // vv.push_back(R3); vv.push_back(R4); vv.push_back(R2); vv.push_back(R1);
+    vv.push_back(R1); vv.push_back(R2); vv.push_back(R3); vv.push_back(R4);
+    WrappedRange * Res = new WrappedRange(zero,zero,zero.getBitWidth());  
+    Res->GeneralizedJoin(vv);
+    // it should be [6,1]
+    dbgs()<< "Result for test 3: " ;
+    dbgs() << "[" << Res->getLB().toString(10,false) << "," << Res->getUB().toString(10, false) << "]\n";
+  }
+
+
 }
 
 

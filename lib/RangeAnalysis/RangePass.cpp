@@ -79,7 +79,7 @@ numFuncs("numfuncs",
 // For range analysis
 #define SIGNED_RANGE_ANALYSIS true
 // For verbose mode
-// #define VERBOSE
+#define VERBOSE
 // Count a difference if the precision improvement is strictly greater
 // than K. The value of K should be defined in terms of cardinality of
 // the result of gamma function.

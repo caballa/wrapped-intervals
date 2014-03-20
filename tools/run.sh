@@ -1,15 +1,23 @@
 #!/bin/bash
 
 #=======================================================================#
-# Change the following paths for clang and opt
+# Change the following variables for clang and opt
 #=======================================================================#
-CLANG_PATH="$HOME/bin"
-OPT_PATH="$HOME/SvnReps/Systems/llvm/Debug+Asserts/bin"
 ###
-# for my own profiling
+# Another version with 32-bits
 ###
-#CLANG_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
-#OPT_PATH="$HOME/Systems/llvm-3.0.src/Debug+Profile/bin"
+COMP_MODE="Debug"
+LLVM_BIN="$HOME/SvnReps/UNIMELB/trunk/verification/domains/code/wrapped-intervals/.llvm-svn/build/$COMP_MODE/bin"
+CLANG_PATH=$LLVM_BIN
+OPT_PATH=$LLVM_BIN
+###
+# for 3.0 version with 32-bits 
+# Use this version if -run-ioc
+###
+# COMP_MODE="Debug"
+# LLVM_BIN="$HOME/SvnReps/UNIMELB/trunk/verification/domains/code/wrapped-intervals/.llvm-3.0.ioc/build/$COMP_MODE/bin"
+# CLANG_PATH=$LLVM_BIN
+# OPT_PATH=$LLVM_BIN
 #=======================================================================#
 
 get_dir() {
@@ -95,9 +103,7 @@ FRONTEND_IOC_OPTS=" -O0 -m32 -fcatch-undefined-ansic-behavior "
 # The directory of this script
 SCRIPT_DIR="`get_dir \`dirname "${BASH_SOURCE[0]}"\``"
 WRAPPED_PATH="`get_dir $SCRIPT_DIR/..`"
-MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Asserts/lib"
-# for my own profiling
-#MYLIBRARY_PATH="$WRAPPED_PATH/Debug+Profile/lib"
+MYLIBRARY_PATH="$WRAPPED_PATH/$COMP_MODE/lib"
 
 COMPILE_WITH_IOC=0 
 # Input C program
