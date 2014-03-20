@@ -7,6 +7,7 @@
 2) Checkout LLVM:
    {{{
    LLVM_ROOT=any_directory_you_like
+   cd LLVM_ROOT
    svn co -r 139364 http://llvm.org/svn/llvm-project/llvm/trunk llvm 
     }}}
 3) Checkout Clang (C/C++ frontend):
