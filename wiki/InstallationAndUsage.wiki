@@ -6,17 +6,17 @@
    }}}
 2) Checkout LLVM:
    {{{
-   LLVM_SRC=any_directory_you_like
+   LLVM_ROOT=any_directory_you_like
    svn co -r 139364 http://llvm.org/svn/llvm-project/llvm/trunk llvm 
     }}}
 3) Checkout Clang (C/C++ frontend):
    {{{
-   cd LLVM_SRC/tools
+   cd LLVM_ROOT/llvm/tools
    svn co -r 139290 http://llvm.org/svn/llvm-project/cfe/trunk clang
    }}}
 4) Build LLVM and Clang:
    {{{
-   cd .. (back to where you started)
+   cd LLVM_ROOT/llvm 
    mkdir build (for building without polluting the source dir)
    cd build
    ../configure -enable-optimized=no CC="gcc -m32" CXX="g++ -m32"
@@ -28,7 +28,7 @@
    {{{
    svn checkout http://wrapped-intervals.googlecode.com/svn/trunk/ wrapped-intervals
    cd wrapped-intervals
-  ./configure --with-llvmsrc=LLVM_SRC
+  ./configure --with-llvmsrc=LLVM_ROOT/llvm --with-llvmobj=LLVM_ROOT/llvm/build
   ./make
    cd docs && make (optional)
    change CLANG_PATH and OPT_PATH in tools/run.sh
