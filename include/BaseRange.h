@@ -69,9 +69,9 @@ namespace unimelb {
     {     
       isSigned = IsSigned;  
       unsigned Width = 0;
-      // Type * t = NULL;
-      // bool IsTrackableType = Utilities::getTypeAndWidth(var, t, Width);
-      // assert(IsTrackableType && "This should not happen!");
+      Type * t = NULL;
+      bool IsTrackableType = Utilities::getTypeAndWidth(var, t, Width);
+      assert(IsTrackableType && "This should not happen!");
       width=Width;
       if (isSigned){
 	setLB(APInt::getSignedMinValue(width));

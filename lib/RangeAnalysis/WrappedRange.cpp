@@ -37,6 +37,8 @@ void test_GeneralizedJoin();
 //#define DEBUG_LOGICALBIT
 
 STATISTIC(NumOfOverflows     ,"Number of overflows");
+STATISTIC(NumOfJoins         ,"Number of joins");
+STATISTIC(NumOfJoinTies      ,"Number of join ties");
 
 void printComparisonOp(unsigned Pred,raw_ostream &Out){
   switch(Pred){
@@ -508,6 +510,8 @@ void WrappedRange::WrappedJoin(AbstractValue *V){
   T->printRange(dbgs()) ; 
   dbgs() << ")=" ;
 #endif /*DEBUG_JOIN*/
+  NumOfJoins++;
+
   // Containment cases (also cover bottom and top cases)
   if (T->WrappedlessOrEqual(S)) {
 #ifdef DEBUG_JOIN
@@ -522,7 +526,7 @@ void WrappedRange::WrappedJoin(AbstractValue *V){
   }
   // Extra case for top: one cover the other
   else if (T->WrappedMember(a) && T->WrappedMember(b) &&
-      S->WrappedMember(c) && S->WrappedMember(d)){
+           S->WrappedMember(c) && S->WrappedMember(d)){
 #ifdef DEBUG_JOIN
     dbgs() << "one cover the other case\n";
 #endif 
@@ -545,12 +549,34 @@ void WrappedRange::WrappedJoin(AbstractValue *V){
   }
   // Left/Right Leaning cases: non-deterministic cases
   // Here we use lexicographical order to resolve ties
-  else if ( Lex_LessOrEqual(WCard(b,c), WCard(d,a)) ||
-	    (WCard(b,c) == WCard(d,a) &&  Lex_LessThan(a,c))){
+  else if (WCard(b,c) == WCard(d,a)){
+    NumOfJoinTies++;
+    if (Lex_LessThan(a,c)){
+      // avoid crossing NP
+      setLB(a);
+      setUB(d);
+      // crossing NP
+      /*
+        setLB(c);
+        setUB(b);
+      */
+    }
+    else{
+      // avoid crossing NP
+      setLB(c);
+      setUB(b);
+      // crossing NP
+      /*
+        setLB(a);
+        setUB(d);
+      */
+    }
+  }
+  else if (Lex_LessOrEqual(WCard(b,c), WCard(d,a))){
 #ifdef DEBUG_JOIN
     dbgs() << "\nnon-overlapping case (left)\n";
-    dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false) 
-	   << " Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
+    dbgs() << "Card(b,c)=" << WCard(b,c).toString(10,false) << " "
+           << "Card(d,a)=" << WCard(d,a).toString(10,false) << "\n";
 #endif 
     setLB(a);
     setUB(d);
@@ -558,12 +584,33 @@ void WrappedRange::WrappedJoin(AbstractValue *V){
   else{
 #ifdef DEBUG_JOIN
     dbgs() << "\nnon-overlapping case (right)\n";
-    dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false)  
-	   << " Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
+    dbgs() << "Card(b,c)=" << WCard(b,c).toString(10,false) << " " 
+           << "Card(d,a)=" << WCard(d,a).toString(10,false) << "\n";
 #endif 
     setLB(c);
     setUB(b);
   }
+
+
+//   else if ( Lex_LessOrEqual(WCard(b,c), WCard(d,a)) ||
+//             (WCard(b,c) == WCard(d,a) &&  Lex_LessThan(a,c))){
+// #ifdef DEBUG_JOIN
+//     dbgs() << "\nnon-overlapping case (left)\n";
+//     dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false) << " "
+//            << "Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
+// #endif 
+//     setLB(a);
+//     setUB(d);
+//   }
+//   else{
+// #ifdef DEBUG_JOIN
+//     dbgs() << "\nnon-overlapping case (right)\n";
+//     dbgs() << "Card(b,c)="  << WCard(b,c).toString(10,false) << " " 
+//            << "Card(d,a)=" << WCard(d,a).toString(10,false)  << "\n";
+// #endif 
+//     setLB(c);
+//     setUB(b);
+//   }
 
   normalizeTop();
   // This is gross but we need to record that this is not bottom
