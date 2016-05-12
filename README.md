@@ -187,11 +187,14 @@ and one more iteration proves this to be a fixed point.
 
 The wrapped interval analysis is based on these two papers:
 
-1. "Signedness-Agnostic Program Analysis: Precise Integer Bounds for Low-Level Code" 
-by Jorge A. Navas, Peter Schachte, Harald Sondergaard and Peter J. Stuckey. Published in APLAS 2012.
+1. "Signedness-Agnostic Program Analysis: Precise Integer Bounds for
+   Low-Level Code"
+   [PDF](cliplab.org/~jorge/docs/wrapped-intervals-aplas12.pdf).
+   APLAS 2012.
 
-2. "Interval Analysis and Machine Arithmetic: Why Signedness Ignorance Is Bliss"
-by Graeme Gange, Jorge A. Navas, Peter Schachte, Harald Sondergaard and Peter J. Stuckey. Published in TOPLAS, 2015.
+2. "Interval Analysis and Machine Arithmetic: Why Signedness Ignorance
+   Is Bliss"
+   [PDF](https://ti.arc.nasa.gov/publications/20091/download/). TOPLAS, 2015.
 
 A great paper to understand the issues of integer overflow and defined
 vs undefined wraparound:
