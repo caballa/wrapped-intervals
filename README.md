@@ -189,12 +189,12 @@ The wrapped interval analysis is based on these two papers:
 
 1. "Signedness-Agnostic Program Analysis: Precise Integer Bounds for
    Low-Level Code"
-   [PDF](cliplab.org/~jorge/docs/wrapped-intervals-aplas12.pdf).
+   [(PDF)](http://www.cliplab.org/~jorge/docs/wrapped-intervals-aplas12.pdf).
    APLAS 2012.
 
 2. "Interval Analysis and Machine Arithmetic: Why Signedness Ignorance
    Is Bliss"
-   [PDF](https://ti.arc.nasa.gov/publications/20091/download/). TOPLAS, 2015.
+   [(PDF)](https://ti.arc.nasa.gov/publications/20091/download/). TOPLAS, 2015.
 
 A great paper to understand the issues of integer overflow and defined
 vs undefined wraparound:
