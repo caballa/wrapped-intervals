@@ -1,5 +1,8 @@
 # Wrapped Interval Analysis 
 
+**NEWS (12/10/2017)**: This repo is obsolete and it is not currently maintained. However, the Wrapped Interval Domain is implemented in Crab (https://github.com/seahorn/crab) and using Crab-LLVM (https://github.com/seahorn/crab-llvm) you can infer wrapped intervals from LLVM bitcode. 
+
+
 This project provides the implementation of a new interval analysis,
 called wrapped interval analysis. It is implemented in C++ using the
 LLVM framework, and currently, it has only support for C programs
